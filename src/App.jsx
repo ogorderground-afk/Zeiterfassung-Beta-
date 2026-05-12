@@ -237,29 +237,29 @@ export default function App(){
   };
 
   const handleDrivePause=()=>{
-    if(!drive.paused){
-      setDrivepauseModal(true);
-    }else{
-      confirmDrivePause(drive.workAlsoPaused||false);
-    }
-  };
-
-  const confirmDrivePause=(pauseWork)=>{
     const ts=Date.now();
     if(!drive.paused){
-      logA("PAUSE_START","Lenkzeit",curLoc);
-      setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}],workAlsoPaused:pauseWork}));
-      if(pauseWork){
-        logA("PAUSE_START","Arbeitszeit (mit Lenkzeit)",curLoc);
-        setWork(w=>({...w,paused:true,pauses:[...w.pauses,{start:ts}]}));
-      }
+      // ← PAUSE: Frage stellen
+      setDrivepauseModal(true);
     }else{
+      // ← RESUME: Ohne Frage, mit gespeichertem Status
+      const pauseWork=drive.workAlsoPaused||false;
       logA("PAUSE_ENDE","Lenkzeit",curLoc);
       setDrive(d=>({...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)}));
       if(pauseWork){
         logA("PAUSE_ENDE","Arbeitszeit (mit Lenkzeit)",curLoc);
         setWork(w=>({...w,paused:false,pauses:w.pauses.map((p,i)=>i===w.pauses.length-1?{...p,end:ts}:p)}));
       }
+    }
+  };
+
+  const confirmDrivePause=(pauseWork)=>{
+    const ts=Date.now();
+    logA("PAUSE_START","Lenkzeit",curLoc);
+    setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}],workAlsoPaused:pauseWork}));
+    if(pauseWork){
+      logA("PAUSE_START","Arbeitszeit (mit Lenkzeit)",curLoc);
+      setWork(w=>({...w,paused:true,pauses:[...w.pauses,{start:ts}]}));
     }
     setDrivepauseModal(false);
   };
