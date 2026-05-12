@@ -407,8 +407,7 @@ export default function App(){
   const Btn=(bg,col,bd)=>({padding:"10px",borderRadius:8,border:bd||"none",background:bg,color:col,fontSize:13,fontWeight:500,cursor:"pointer",flex:1});
 
   return isPWA()?(
-{!isPWA() && <div style={{position:'fixed',top:0,left:0,right:0,background:'#ff0000',color:'white',padding:'20px',fontSize:'20px',textAlign:'center',zIndex:9999}}>🚨 BROWSER: App zuerst installieren!</div>}
-    
+
     <div style={{fontFamily:"system-ui,-apple-system,sans-serif",background:t.bg,minHeight:"100vh",color:t.text}}>
       <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}body{margin:0;padding:0}`}</style>
 
