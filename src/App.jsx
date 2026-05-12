@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { checkStorageAndWarn, logPageLoad, logCSVExport, rateLimiter } from "./utils/rateLimiter";
 
-const GPS_INTERVAL = 10 * 60 * 1000;
 const ARV_WORK  = [{h:5.5,label:"15 Min. Pause"},{h:7,label:"30 Min. Pause"},{h:9,label:"1 Std. Pause"}];
 const ARV_DRIVE = [{h:4.5,label:"45 Min. Pflichtpause (ARV 1)"},{h:9,label:"Tageslimit Lenkzeit"}];
 
@@ -19,10 +18,7 @@ function getPos(){
     if(!navigator.geolocation){rej(new Error("Geolocation nicht verfügbar"));return;}
     navigator.geolocation.getCurrentPosition(
       p=>res({lat:p.coords.latitude,lng:p.coords.longitude,acc:Math.round(p.coords.accuracy)}),
-      err=>{
-        console.warn("GPS-Fehler:",err.message);
-        rej(err);
-      },
+      err=>{console.warn("GPS-Fehler:",err.message);rej(err);},
       {timeout:10000,enableHighAccuracy:false}
     );
   });
@@ -31,33 +27,21 @@ function getPos(){
 function locStr(l){if(!l)return"—";if(typeof l==="string")return l;return`${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`;}
 
 const saveToStorage=(key,data)=>{
-  try {
-    localStorage.setItem(key,JSON.stringify(data));
-  } catch(e) {
-    if(e.name==="QuotaExceededError"){
-      console.error("localStorage voll! Alte Sessions werden gelöscht...");
-      rateLimiter.autoCleanupOldSessions();
-      localStorage.setItem(key,JSON.stringify(data));
-    }else{
-      console.error("localStorage Fehler:",e);
-    }
-  }
+  try{localStorage.setItem(key,JSON.stringify(data));}
+  catch(e){if(e.name==="QuotaExceededError"){rateLimiter.autoCleanupOldSessions();localStorage.setItem(key,JSON.stringify(data));}else{console.error("localStorage Fehler:",e);}}
 };
 
 const loadFromStorage=(key,def=null)=>{
-  try{
-    const v=localStorage.getItem(key);
-    return v?JSON.parse(v):def;
-  }catch(e){
-    console.error("localStorage Parse-Fehler bei",key,e);
-    return def;
-  }
+  try{const v=localStorage.getItem(key);return v?JSON.parse(v):def;}
+  catch(e){console.error("localStorage Parse-Fehler bei",key,e);return def;}
 };
 
 export default function App(){
   const [dark,setDark]=useState(true);
   const [view,setView]=useState("tracker");
   const [storageWarning,setStorageWarning]=useState(null);
+  const [gpsInterval,setGpsInterval]=useState(10);
+  const [drivepauseModal,setDrivepauseModal]=useState(false);
 
   const [taetigkeitModal,setTaetigkeitModal]=useState(false);
   const [taetigkeitInput,setTaetigkeitInput]=useState("");
@@ -99,15 +83,9 @@ export default function App(){
 
   useEffect(()=>{
     const limitCheck=logPageLoad();
-    if(limitCheck.blocked){
-      setStorageWarning("❌ Zu viele Anfragen. Service wird momentan begrenzt.");
-      return;
-    }
-
+    if(limitCheck.blocked){setStorageWarning("❌ Zu viele Anfragen. Service wird momentan begrenzt.");return;}
     const quota=checkStorageAndWarn();
-    if(quota.warning){
-      setStorageWarning(quota.warning);
-    }
+    if(quota.warning){setStorageWarning(quota.warning);}
 
     const w=loadFromStorage("work");
     const d=loadFromStorage("drive");
@@ -116,21 +94,16 @@ export default function App(){
     const n=loadFromStorage("notes",[]);
     const al=loadFromStorage("actionLog",[]);
     const gl=loadFromStorage("gpsLog",[]);
+    const gi=loadFromStorage("gpsInterval",10);
 
-    if(w){
-      w._lastSave=Date.now();
-      setWork(w);
-    }
-    if(d){
-      d._lastSave=Date.now();
-      setDrive(d);
-    }
+    if(w){w._lastSave=Date.now();setWork(w);}
+    if(d){d._lastSave=Date.now();setDrive(d);}
     setWorkSessions(ws);
     setDriveSessions(ds);
     setNotes(n);
     setActionLog(al);
     setGpsLog(gl);
-
+    setGpsInterval(gi);
     setNow(Date.now());
 
     if("serviceWorker" in navigator){
@@ -138,29 +111,14 @@ export default function App(){
     }
   },[]);
 
-  useEffect(()=>{
-    if(work){
-      const toSave={...work,_lastSave:Date.now()};
-      saveToStorage("work",toSave);
-    }else{
-      localStorage.removeItem("work");
-    }
-  },[work]);
-
-  useEffect(()=>{
-    if(drive){
-      const toSave={...drive,_lastSave:Date.now()};
-      saveToStorage("drive",toSave);
-    }else{
-      localStorage.removeItem("drive");
-    }
-  },[drive]);
-
+  useEffect(()=>{if(work){const toSave={...work,_lastSave:Date.now()};saveToStorage("work",toSave);}else{localStorage.removeItem("work");}}, [work]);
+  useEffect(()=>{if(drive){const toSave={...drive,_lastSave:Date.now()};saveToStorage("drive",toSave);}else{localStorage.removeItem("drive");}}, [drive]);
   useEffect(()=>saveToStorage("workSessions",workSessions),[workSessions]);
   useEffect(()=>saveToStorage("driveSessions",driveSessions),[driveSessions]);
   useEffect(()=>saveToStorage("notes",notes),[notes]);
   useEffect(()=>saveToStorage("actionLog",actionLog),[actionLog]);
   useEffect(()=>saveToStorage("gpsLog",gpsLog),[gpsLog]);
+  useEffect(()=>saveToStorage("gpsInterval",gpsInterval),[gpsInterval]);
 
   const logA=useCallback((action,detail="",loc=null)=>{
     setActionLog(p=>[...p,{ts:Date.now(),action,detail,loc}]);
@@ -178,18 +136,18 @@ export default function App(){
       const p=await getPos();
       setCurLoc(p);
       setGpsLog(g=>[...g,{ts:Date.now(),...p}]);
-      logA("GPS","",p);
+      logA("GPS","Koordinaten: "+locStr(p),p);
     }catch(err){
       console.log("GPS-Fehler:",err.message);
     }
   },[logA]);
 
   useEffect(()=>{
-    if(!work){clearInterval(gpsRef.current);return;}
+    if(!work || gpsInterval===0){clearInterval(gpsRef.current);return;}
     logGps();
-    gpsRef.current=setInterval(logGps,GPS_INTERVAL);
+    gpsRef.current=setInterval(logGps,gpsInterval*60*1000);
     return()=>clearInterval(gpsRef.current);
-  },[!!work,logGps]);
+  },[!!work,gpsInterval,logGps]);
 
   const wNet=calcNet(work,now),wPMs=calcPMs(work,now);
   const dNet=calcNet(drive,now),dPMs=calcPMs(drive,now);
@@ -222,16 +180,27 @@ export default function App(){
   };
 
   const handleDrivePause=()=>{
+    setDrivepauseModal(true);
+  };
+
+  const confirmDrivePause=(pauseWork)=>{
     const ts=Date.now();
     if(!drive.paused){
       logA("PAUSE_START","Lenkzeit",curLoc);
       setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}]}));
-      setWork(w=>({...w,paused:true,pauses:[...w.pauses,{start:ts}]}));
+      if(pauseWork){
+        logA("PAUSE_START","Arbeitszeit (mit Lenkzeit)",curLoc);
+        setWork(w=>({...w,paused:true,pauses:[...w.pauses,{start:ts}]}));
+      }
     }else{
       logA("PAUSE_ENDE","Lenkzeit",curLoc);
       setDrive(d=>({...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)}));
-      setWork(w=>({...w,paused:false,pauses:w.pauses.map((p,i)=>i===w.pauses.length-1?{...p,end:ts}:p)}));
+      if(pauseWork){
+        logA("PAUSE_ENDE","Arbeitszeit (mit Lenkzeit)",curLoc);
+        setWork(w=>({...w,paused:false,pauses:w.pauses.map((p,i)=>i===w.pauses.length-1?{...p,end:ts}:p)}));
+      }
     }
+    setDrivepauseModal(false);
   };
 
   const stopDrive=()=>{
@@ -280,10 +249,7 @@ export default function App(){
 
   const exportCSV=(fromStr,toStr)=>{
     const exportLimit=logCSVExport();
-    if(exportLimit.blocked){
-      alert("Zu viele CSV-Exporte! Bitte später versuchen.");
-      return;
-    }
+    if(exportLimit.blocked){alert("Zu viele CSV-Exporte! Bitte später versuchen.");return;}
 
     const from=fromStr?new Date(fromStr).getTime():0;
     const to=toStr?new Date(toStr).getTime()+86400000:Date.now();
@@ -291,13 +257,28 @@ export default function App(){
     const filteredWorks=workSessions.filter(s=>s.start>=from&&s.start<to);
     const filteredDrives=driveSessions.filter(s=>s.start>=from&&s.start<to);
     const filteredNotes=notes.filter(n=>n.ts>=from&&n.ts<to);
+    const filteredGps=gpsLog.filter(g=>g.ts>=from&&g.ts<to);
 
-    const hdr="Typ,Datum,Start,Ende,Netto (h),Pausen (Min),Detail,Bewertung,Standort";
+    const hdr="type,datum,start_time,end_time,netto_hours,pause_minutes,activity,rating,location_lat,location_lng,location_accuracy,gps_count,comment";
+    
     const rows=[
-      ...filteredWorks.map(s=>["Arbeit",fmtDate(s.start),fmtTime(s.start),fmtTime(s.end),toH(s.netMs).toFixed(2),Math.round(s.pauseMs/60000),s.taetigkeit||"",s.stars?`★${s.stars}`:"",locStr(s.location)].join(",")),
-      ...filteredDrives.map(s=>["Fahrt",fmtDate(s.start),fmtTime(s.start),fmtTime(s.end),toH(s.netMs).toFixed(2),Math.round(s.pauseMs/60000),"","",locStr(s.location)].join(",")),
-      ...filteredNotes.map(n=>`"Notiz","${fmtDate(n.ts)}","${fmtTime(n.ts)}","","","","${n.text.replace(/"/g,'""')}","","${locStr(n.loc)}"`),
+      ...filteredWorks.map(s=>{
+        const locData=s.location?`"${s.location.lat}","${s.location.lng}","${s.location.acc}"`:'"","",""';
+        const gpsForSession=filteredGps.filter(g=>g.ts>=s.start&&g.ts<=(s.end||now)).length;
+        return `"Arbeit","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${Math.round(s.pauseMs/60000)}","${s.taetigkeit||""}","${s.stars||0}",${locData},"${gpsForSession}","${s.comment||""}"`;
+      }),
+      ...filteredDrives.map(s=>{
+        const locData=s.location?`"${s.location.lat}","${s.location.lng}","${s.location.acc}"`:'"","",""';
+        const gpsForSession=filteredGps.filter(g=>g.ts>=s.start&&g.ts<=(s.end||now)).length;
+        return `"Fahrt","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${Math.round(s.pauseMs/60000)}","","","",${locData},"${gpsForSession}",""`;
+      }),
+      ...filteredNotes.map(n=>{
+        const locData=n.loc?`"${n.loc.lat}","${n.loc.lng}","${n.loc.acc}"`:'"","",""';
+        return `"Notiz","${fmtDate(n.ts)}","${fmtTime(n.ts)}","","","","${n.text.replace(/"/g,'""')}","",${locData},"0",""`;
+      }),
+      ...filteredGps.map(g=>`"GPS","${fmtDate(g.ts)}","${fmtTime(g.ts)}","","","","","","${g.lat}","${g.lng}","${g.acc}","1",""`)
     ];
+
     const blob=new Blob([[hdr,...rows].join("\n")],{type:"text/csv;charset=utf-8;"});
     Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:`zeiterfassung_${fromStr||"alle"}_bis_${toStr||"heute"}.csv`}).click();
     setExportModal(false);
@@ -324,7 +305,7 @@ export default function App(){
 
   const ws2=new Date();ws2.setDate(ws2.getDate()-ws2.getDay()+1);ws2.setHours(0,0,0,0);
   const weekMs=workSessions.filter(s=>s.start>=ws2).reduce((s,x)=>s+x.netMs,0);
-  const navItems=[["tracker","Tracker"],["notizen","Notizen"],["dashboard","Dashboard"]].filter(([v])=>v!=="notizen"||!!work);
+  const navItems=[["tracker","Tracker"],["notizen","Notizen"],["dashboard","Dashboard"]];
 
   const t=dark
     ?{bg:"#0f1117",card:"#1a1d27",s2:"#23263a",border:"#2d314840",text:"#e2e8f0",muted:"#94a3b8",hint:"#475569"}
@@ -347,7 +328,12 @@ export default function App(){
           <div style={{width:26,height:26,background:"#6366f1",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:13}}>⏱</div>
           ZeitTracker
         </div>
-        <div style={{display:"flex",gap:4}}>
+        <div style={{display:"flex",gap:4,alignItems:"center"}}>
+          {work&&(
+            <button onClick={()=>setView(view==="gps"?"tracker":"gps")} style={{padding:"5px 11px",borderRadius:8,border:`0.5px solid ${t.border}`,background:view==="gps"?"#6366f1":"transparent",color:view==="gps"?"white":t.muted,fontSize:11,fontWeight:500,cursor:"pointer"}}>
+              📍 GPS
+            </button>
+          )}
           {navItems.map(([v,l])=>(
             <button key={v} onClick={()=>setView(v)} style={{padding:"5px 13px",borderRadius:8,border:view===v?"none":`0.5px solid ${t.border}`,background:view===v?"#6366f1":"transparent",color:view===v?"white":t.muted,fontSize:12,fontWeight:500,cursor:"pointer"}}>{l}</button>
           ))}
@@ -415,11 +401,7 @@ export default function App(){
                   </>
                 ):(
                   <div style={{paddingTop:14}}>
-                    <button
-                      onClick={()=>{setDrive({start:Date.now(),pauses:[],paused:false});setNow(Date.now());setShowDriveDot(true);logA("FAHRT_START","",curLoc);}}
-                      disabled={work.paused}
-                      style={{width:"100%",padding:"11px",background:work.paused?"#3b82f608":"#3b82f614",border:"0.5px solid #3b82f640",borderRadius:8,color:work.paused?"#3b82f650":"#3b82f6",fontSize:13,fontWeight:500,cursor:work.paused?"default":"pointer"}}
-                    >🚗 Fahrt starten{work.paused?" (Arbeitszeit pausiert)":""}</button>
+                    <button onClick={()=>{setDrive({start:Date.now(),pauses:[],paused:false});setNow(Date.now());setShowDriveDot(true);logA("FAHRT_START","",curLoc);}} disabled={work.paused} style={{width:"100%",padding:"11px",background:work.paused?"#3b82f608":"#3b82f614",border:"0.5px solid #3b82f640",borderRadius:8,color:work.paused?"#3b82f650":"#3b82f6",fontSize:13,fontWeight:500,cursor:work.paused?"default":"pointer"}}>🚗 Fahrt starten{work.paused?" (Arbeitszeit pausiert)":""}</button>
                   </div>
                 )}
               </div>
@@ -442,6 +424,20 @@ export default function App(){
               )
             )}
           </>
+        )}
+
+        {view==="gps"&&work&&(
+          <div style={C()}>
+            <div style={{fontWeight:500,fontSize:14,marginBottom:14}}>GPS-Intervall</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {[{v:10,l:"Alle 10 Min"},{v:30,l:"Alle 30 Min"},{v:60,l:"Alle 60 Min"},{v:0,l:"Aus"}].map(opt=>(
+                <button key={opt.v} onClick={()=>setGpsInterval(opt.v)} style={{padding:"12px",borderRadius:8,border:`2px solid ${gpsInterval===opt.v?"#6366f1":t.border}`,background:gpsInterval===opt.v?"#6366f114":"transparent",color:gpsInterval===opt.v?"#6366f1":t.text,fontSize:13,fontWeight:500,cursor:"pointer",textAlign:"left"}}>
+                  {gpsInterval===opt.v?"✓ ":""} {opt.l}
+                </button>
+              ))}
+            </div>
+            <div style={{fontSize:11,color:t.hint,marginTop:14}}>Aktuell: {gpsInterval===0?"GPS aus":gpsInterval+"min Intervall"}</div>
+          </div>
         )}
 
         {view==="notizen"&&work&&(
@@ -481,7 +477,7 @@ export default function App(){
         {view==="dashboard"&&(
           <>
             <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:12}}>
-              {[["Woche",toH(weekMs).toFixed(1)+"h","von 45h"],["Schichten",workSessions.length,driveSessions.length+" Fahrten"],["Notizen",notes.length,gpsLog.length+" GPS-Pings"]].map(([l,v,s])=>(
+              {[["Woche",toH(weekMs).toFixed(1)+"h","von 45h"],["Schichten",workSessions.length,driveSessions.length+" Fahrten"],["Notizen",notes.length,gpsLog.length+" GPS"]].map(([l,v,s])=>(
                 <div key={l} style={{background:t.s2,borderRadius:10,padding:"13px 14px"}}>
                   <div style={{fontSize:10,color:t.hint,textTransform:"uppercase",letterSpacing:"0.06em"}}>{l}</div>
                   <div style={{fontSize:24,fontWeight:500,marginTop:5}}>{v}</div>
@@ -536,6 +532,19 @@ export default function App(){
           </>
         )}
       </div>
+
+      {drivepauseModal&&(
+        <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box"}}>
+            <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Arbeitszeit auch pausieren?</div>
+            <div style={{fontSize:13,color:t.muted,marginBottom:22}}>Soll die Arbeitszeit auch pausiert werden?</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>confirmDrivePause(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Nein, nur Fahrt</button>
+              <button onClick={()=>confirmDrivePause(true)} style={Btn("#6366f1","white")}>Ja, beide</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {exportModal&&(
         <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
@@ -601,12 +610,7 @@ export default function App(){
         <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
           <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box"}}>
             <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Tätigkeit</div>
-            <input
-              autoFocus value={taetigkeitInput} onChange={e=>setTaetigkeitInput(e.target.value)}
-              onKeyDown={e=>{if(e.key==="Enter")startWork();}}
-              placeholder="z.B. Fahrer, Lager, Disposition..."
-              style={{width:"100%",padding:"12px 14px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:9,color:t.text,fontSize:14,boxSizing:"border-box",outline:"none"}}
-            />
+            <input autoFocus value={taetigkeitInput} onChange={e=>setTaetigkeitInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")startWork();}} placeholder="z.B. Fahrer, Lager, Disposition..." style={{width:"100%",padding:"12px 14px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:9,color:t.text,fontSize:14,boxSizing:"border-box",outline:"none"}}/>
             <div style={{display:"flex",gap:8,marginTop:12}}>
               <button onClick={()=>setTaetigkeitModal(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
               <button onClick={startWork} style={Btn("#6366f1","white")}>Starten</button>
@@ -635,14 +639,10 @@ export default function App(){
             <div style={{fontSize:13,color:t.muted,marginBottom:18}}>Kurze Bewertung der Schicht</div>
             <div style={{display:"flex",gap:8,justifyContent:"center",marginBottom:18}}>
               {[1,2,3,4,5].map(s=>(
-                <button key={s} onClick={()=>setDayStars(s)} style={{background:"none",border:"none",fontSize:38,cursor:"pointer",opacity:s<=dayStars?1:0.2,transition:"opacity .12s",padding:"0 4px"}}>★</button>
+                <button key={s} onClick={()=>setDayStars(s)} style={{background:"none",border:`2px solid ${s<=dayStars?"#6366f1":t.border}`,borderRadius:8,fontSize:32,cursor:"pointer",opacity:s<=dayStars?1:0.3,transition:"opacity .12s, border-color .12s",padding:"8px",color:s<=dayStars?"#6366f1":t.text}}>★</button>
               ))}
             </div>
-            <textarea
-              value={dayComment} onChange={e=>setDayComment(e.target.value)}
-              placeholder="Bemerkungen (optional)..."
-              style={{width:"100%",minHeight:72,background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:9,padding:"10px 12px",color:t.text,fontSize:14,resize:"none",boxSizing:"border-box"}}
-            />
+            <textarea value={dayComment} onChange={e=>setDayComment(e.target.value)} placeholder="Bemerkungen (optional)..." style={{width:"100%",minHeight:72,background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:9,padding:"10px 12px",color:t.text,fontSize:14,resize:"none",boxSizing:"border-box"}}/>
             <button onClick={()=>finalizeStop(dayStars,dayComment.trim())} style={{width:"100%",padding:"12px",background:"#6366f1",border:"none",borderRadius:9,color:"white",fontSize:14,fontWeight:500,cursor:"pointer",marginTop:12}}>
               Abschliessen
             </button>
