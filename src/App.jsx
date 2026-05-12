@@ -45,7 +45,7 @@ export default function App(){
   const [storageWarning,setStorageWarning]=useState(null);
   const [gpsInterval,setGpsInterval]=useState(10);
   const [drivepauseModal,setDrivepauseModal]=useState(false);
-  const [driveExpanded,setDriveExpanded]=useState(false); // ← STARTS COLLAPSED!
+  const [driveExpanded,setDriveExpanded]=useState(false);
   const [ruleDialogOpen,setRuleDialogOpen]=useState(false);
   const [selectedRule,setSelectedRule]=useState("standard");
   const [ruleManagerOpen,setRuleManagerOpen]=useState(false);
@@ -237,17 +237,29 @@ export default function App(){
   };
 
   const handleDrivePause=()=>{
-    setDrivepauseModal(true);
+    const ts=Date.now();
+    if(!drive.paused){
+      // ← FAHRT PAUSIEREN: Modal öffnen
+      setDrivepauseModal(true);
+    }else{
+      // ← FAHRT FORTSETZEN: Ohne Frage, mit gespeichertem Status
+      const pauseWork=drive.workAlsoPaused||false;
+      logA("PAUSE_ENDE","Lenkzeit",curLoc);
+      setDrive(d=>({...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)}));
+      if(pauseWork){
+        logA("PAUSE_ENDE","Arbeitszeit (mit Lenkzeit)",curLoc);
+        setWork(w=>({...w,paused:false,pauses:w.pauses.map((p,i)=>i===w.pauses.length-1?{...p,end:ts}:p)}));
+      }
+    }
   };
 
   const confirmDrivePause=(pauseWork)=>{
     const ts=Date.now();
-    if(!drive.paused){
-      logA("PAUSE_START","Lenkzeit",curLoc);
-      setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}]}));
-    }else{
-      logA("PAUSE_ENDE","Lenkzeit",curLoc);
-      setDrive(d=>({...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)}));
+    logA("PAUSE_START","Lenkzeit",curLoc);
+    setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}],workAlsoPaused:pauseWork}));
+    if(pauseWork){
+      logA("PAUSE_START","Arbeitszeit (mit Lenkzeit)",curLoc);
+      setWork(w=>({...w,paused:true,pauses:[...w.pauses,{start:ts}]}));
     }
     setDrivepauseModal(false);
   };
@@ -394,16 +406,9 @@ export default function App(){
   const C=(bc)=>({background:t.card,borderRadius:14,border:`1px solid ${bc||t.border}`,padding:"18px 20px",marginBottom:12,backdropFilter:t.backdrop});
   const Btn=(bg,col,bd)=>({padding:"10px",borderRadius:8,border:bd||"none",background:bg,color:col,fontSize:13,fontWeight:500,cursor:"pointer",flex:1});
 
-  return(
+  return isPWA()?(
     <div style={{fontFamily:"system-ui,-apple-system,sans-serif",background:t.bg,minHeight:"100vh",color:t.text}}>
       <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}body{margin:0;padding:0}`}</style>
-
-      {!isPWA()&&(
-        <div style={{background:"#6366f1",color:"white",padding:"12px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12}}>
-          <span>📱 Als App installieren</span>
-          <button onClick={()=>{const a=document.createElement("a");a.href=window.location.href;a.download="ZeitTracker.html";a.click();}} style={{background:"white",color:"#6366f1",border:"none",padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:500,cursor:"pointer"}}>⬇ Download</button>
-        </div>
-      )}
 
       <nav style={{background:t.card,borderBottom:`0.5px solid ${t.border}`,padding:"11px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",backdropFilter:t.backdrop}}>
         <div style={{fontWeight:600,fontSize:15,display:"flex",alignItems:"center",gap:8}}>
@@ -743,6 +748,35 @@ export default function App(){
         <button onClick={()=>setDark(d=>!d)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>☀/🌙</button>
         <button onClick={()=>setTransparent(t=>!t)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔷</button>
         <button onClick={()=>setNotificationEnabled(n=>!n)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:notificationEnabled?"#6366f1":t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔔</button>
+      </div>
+    </div>
+  ):(
+    <div style={{fontFamily:"system-ui,-apple-system,sans-serif",background:t.bg,minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:t.text,padding:"20px"}}>
+      <style>{`body{margin:0;padding:0}`}</style>
+      
+      <div style={{textAlign:"center",maxWidth:400}}>
+        <div style={{fontSize:80,marginBottom:20}}>⏱</div>
+        
+        <h1 style={{fontSize:32,fontWeight:600,marginBottom:12}}>ZeitTracker</h1>
+        <p style={{fontSize:14,color:t.muted,marginBottom:30,lineHeight:1.6}}>Arbeitszeiterfassung mit GPS, Fahrtmodus & intelligenten Regeln</p>
+        
+        <button onClick={()=>{const a=document.createElement("a");a.href=window.location.href;a.download="ZeitTracker.html";a.click();}} style={{width:"100%",padding:"16px",background:"#6366f1",border:"none",borderRadius:12,color:"white",fontSize:16,fontWeight:600,cursor:"pointer",marginBottom:12}}>
+          ⬇ App Installieren
+        </button>
+        
+        <div style={{fontSize:12,color:t.hint,padding:"20px",background:t.s2,borderRadius:10,marginTop:20}}>
+          <p style={{marginBottom:10}}><strong>So geht's:</strong></p>
+          <ol style={{textAlign:"left",lineHeight:1.8}}>
+            <li>Klick auf "App Installieren"</li>
+            <li>Datei speichern (ZeitTracker.html)</li>
+            <li>Datei öffnen → Zur App hinzufügen</li>
+            <li>Vom Homescreen aus starten</li>
+          </ol>
+        </div>
+
+        <div style={{fontSize:11,color:t.muted,marginTop:20}}>
+          Oder: Android/iPhone Browser → <br/> Menu → "App installieren"
+        </div>
       </div>
     </div>
   );
