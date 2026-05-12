@@ -24,7 +24,6 @@ function getPos(){
   });
 }
 
-
 function locStr(l){if(!l)return"—";if(typeof l==="string")return l;return`${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`;}
 
 const saveToStorage=(key,data)=>{
@@ -98,6 +97,8 @@ export default function App(){
   const [deleteFromDate,setDeleteFromDate]=useState("");
   const [deleteToDate,setDeleteToDate]=useState("");
   const [deleteAll,setDeleteAll]=useState(false);
+
+  const pwaActive=isPWA();
 
   useEffect(()=>{
     const limitCheck=logPageLoad();
@@ -240,10 +241,8 @@ export default function App(){
   const handleDrivePause=()=>{
     const ts=Date.now();
     if(!drive.paused){
-      // ← FAHRT PAUSIEREN: Modal öffnen
       setDrivepauseModal(true);
     }else{
-      // ← FAHRT FORTSETZEN: Ohne Frage, mit gespeichertem Status
       const pauseWork=drive.workAlsoPaused||false;
       logA("PAUSE_ENDE","Lenkzeit",curLoc);
       setDrive(d=>({...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)}));
@@ -407,12 +406,13 @@ export default function App(){
   const C=(bc)=>({background:t.card,borderRadius:14,border:`1px solid ${bc||t.border}`,padding:"18px 20px",marginBottom:12,backdropFilter:t.backdrop});
   const Btn=(bg,col,bd)=>({padding:"10px",borderRadius:8,border:bd||"none",background:bg,color:col,fontSize:13,fontWeight:500,cursor:"pointer",flex:1});
 
-  return isPWA()?(
-
+  return(
     <div style={{fontFamily:"system-ui,-apple-system,sans-serif",background:t.bg,minHeight:"100vh",color:t.text}}>
       <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}body{margin:0;padding:0}`}</style>
 
-      <nav style={{background:t.card,borderBottom:`0.5px solid ${t.border}`,padding:"11px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",backdropFilter:t.backdrop}}>
+      {!pwaActive&&<div style={{position:"fixed",top:0,left:0,right:0,background:"#ef4444",color:"white",padding:"16px",fontSize:"16px",fontWeight:"600",textAlign:"center",zIndex:9999,boxShadow:"0 4px 12px rgba(0,0,0,0.3)"}}>🚨 BROWSER: Installiere die App zuerst!</div>}
+
+      <nav style={{background:t.card,borderBottom:`0.5px solid ${t.border}`,padding:"11px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",backdropFilter:t.backdrop,marginTop:pwaActive?0:"50px"}}>
         <div style={{fontWeight:600,fontSize:15,display:"flex",alignItems:"center",gap:8}}>
           <div style={{width:26,height:26,background:"#6366f1",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:13}}>⏱</div>
           ZeitTracker
@@ -454,7 +454,8 @@ export default function App(){
                 </>
               ):(
                 <div style={{paddingTop:14}}>
-                  <button onClick={()=>{setTaetigkeitModal(true);setTaetigkeitInput("");}} style={{width:"100%",padding:"13px",background:"#6366f1",border:"none",borderRadius:10,color:"white",fontSize:15,fontWeight:500,cursor:"pointer"}}>▶ Einstempeln</button>
+                  <button onClick={()=>{if(pwaActive){setTaetigkeitModal(true);setTaetigkeitInput("");}}} disabled={!pwaActive} style={{width:"100%",padding:"13px",background:pwaActive?"#6366f1":"#6366f140",border:"none",borderRadius:10,color:pwaActive?"white":"#6366f180",fontSize:15,fontWeight:500,cursor:pwaActive?"pointer":"not-allowed"}}>▶ Einstempeln</button>
+                  {!pwaActive&&<div style={{fontSize:11,color:"#ef4444",marginTop:8,textAlign:"center"}}>⚠️ App zuerst installieren</div>}
                 </div>
               )}
             </div>
@@ -462,7 +463,7 @@ export default function App(){
             {work&&(
               <>
                 {!driveExpanded?<div style={C(drive?dCol+"50":t.border,0,0)}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setDriveExpanded(true)}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:pwaActive?"pointer":"default"}} onClick={()=>{if(pwaActive)setDriveExpanded(true);}}>
                     <div style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
                       <span style={{fontSize:20}}>🚗</span>
                       <div>
@@ -498,7 +499,8 @@ export default function App(){
                     </>
                   ):(
                     <div style={{paddingTop:14}}>
-                      <button onClick={()=>setRuleDialogOpen(true)} disabled={work.paused} style={{width:"100%",padding:"11px",background:work.paused?"#3b82f608":"#3b82f614",border:"0.5px solid #3b82f640",borderRadius:8,color:work.paused?"#3b82f650":"#3b82f6",fontSize:13,fontWeight:500,cursor:work.paused?"default":"pointer"}}>🚗 Fahrt starten</button>
+                      <button onClick={()=>{if(pwaActive)setRuleDialogOpen(true);}} disabled={!pwaActive||work.paused} style={{width:"100%",padding:"11px",background:pwaActive&&!work.paused?"#3b82f614":"#3b82f608",border:"0.5px solid #3b82f640",borderRadius:8,color:pwaActive&&!work.paused?"#3b82f6":"#3b82f650",fontSize:13,fontWeight:500,cursor:pwaActive&&!work.paused?"pointer":"not-allowed"}}>🚗 Fahrt starten</button>
+                      {!pwaActive&&<div style={{fontSize:11,color:"#ef4444",marginTop:8,textAlign:"center"}}>⚠️ App zuerst installieren</div>}
                     </div>
                   )}
                 </div>}
@@ -748,37 +750,8 @@ export default function App(){
 
       <div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",zIndex:100,display:"flex",gap:8}}>
         <button onClick={()=>setDark(d=>!d)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>☀/🌙</button>
-        <button onClick={()=>setTransparent(t=>!t)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔷</button>
+        <button onClick={()=>setTransparent(tr=>!tr)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔷</button>
         <button onClick={()=>setNotificationEnabled(n=>!n)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:notificationEnabled?"#6366f1":t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔔</button>
-      </div>
-    </div>
-  ):(
-    <div style={{fontFamily:"system-ui,-apple-system,sans-serif",background:t.bg,minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:t.text,padding:"20px"}}>
-      <style>{`body{margin:0;padding:0}`}</style>
-      
-      <div style={{textAlign:"center",maxWidth:400}}>
-        <div style={{fontSize:80,marginBottom:20}}>⏱</div>
-        
-        <h1 style={{fontSize:32,fontWeight:600,marginBottom:12}}>ZeitTracker</h1>
-        <p style={{fontSize:14,color:t.muted,marginBottom:30,lineHeight:1.6}}>Arbeitszeiterfassung mit GPS, Fahrtmodus & intelligenten Regeln</p>
-        
-        <button onClick={()=>{const a=document.createElement("a");a.href=window.location.href;a.download="ZeitTracker.html";a.click();}} style={{width:"100%",padding:"16px",background:"#6366f1",border:"none",borderRadius:12,color:"white",fontSize:16,fontWeight:600,cursor:"pointer",marginBottom:12}}>
-          ⬇ App Installieren
-        </button>
-        
-        <div style={{fontSize:12,color:t.hint,padding:"20px",background:t.s2,borderRadius:10,marginTop:20}}>
-          <p style={{marginBottom:10}}><strong>So geht's:</strong></p>
-          <ol style={{textAlign:"left",lineHeight:1.8}}>
-            <li>Klick auf "App Installieren"</li>
-            <li>Datei speichern (ZeitTracker.html)</li>
-            <li>Datei öffnen → Zur App hinzufügen</li>
-            <li>Vom Homescreen aus starten</li>
-          </ol>
-        </div>
-
-        <div style={{fontSize:11,color:t.muted,marginTop:20}}>
-          Oder: Android/iPhone Browser → <br/> Menu → "App installieren"
-        </div>
       </div>
     </div>
   );
