@@ -24,6 +24,7 @@ function getPos(){
   });
 }
 
+
 function locStr(l){if(!l)return"—";if(typeof l==="string")return l;return`${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`;}
 
 const saveToStorage=(key,data)=>{
