@@ -45,11 +45,12 @@ export default function App(){
   const [storageWarning,setStorageWarning]=useState(null);
   const [gpsInterval,setGpsInterval]=useState(10);
   const [drivepauseModal,setDrivepauseModal]=useState(false);
-  const [driveCollapsed,setDriveCollapsed]=useState(false);
+  const [driveExpanded,setDriveExpanded]=useState(false); // ← STARTS COLLAPSED!
   const [ruleDialogOpen,setRuleDialogOpen]=useState(false);
   const [selectedRule,setSelectedRule]=useState("standard");
   const [ruleManagerOpen,setRuleManagerOpen]=useState(false);
   const [notificationEnabled,setNotificationEnabled]=useState(true);
+  const [triggeredRules,setTriggeredRules]=useState([]);
   const [dashboardFilters,setDashboardFilters]=useState({gps:false,notes:false,daysBack:7});
 
   const [taetigkeitModal,setTaetigkeitModal]=useState(false);
@@ -113,7 +114,8 @@ export default function App(){
     const gi=loadFromStorage("gpsInterval",10);
     const r=loadFromStorage("rules",[]);
     const ne=loadFromStorage("notificationEnabled",true);
-    const dc=loadFromStorage("driveCollapsed",false);
+    const de=loadFromStorage("driveExpanded",false);
+    const tr=loadFromStorage("triggeredRules",[]);
 
     if(w){w._lastSave=Date.now();setWork(w);}
     if(d){d._lastSave=Date.now();setDrive(d);}
@@ -125,7 +127,8 @@ export default function App(){
     setGpsInterval(gi);
     setRules(r);
     setNotificationEnabled(ne);
-    setDriveCollapsed(dc);
+    setDriveExpanded(de);
+    setTriggeredRules(tr);
     setNow(Date.now());
 
     if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(err=>console.log("SW registration failed:",err));}
@@ -141,7 +144,8 @@ export default function App(){
   useEffect(()=>saveToStorage("gpsInterval",gpsInterval),[gpsInterval]);
   useEffect(()=>saveToStorage("rules",rules),[rules]);
   useEffect(()=>saveToStorage("notificationEnabled",notificationEnabled),[notificationEnabled]);
-  useEffect(()=>saveToStorage("driveCollapsed",driveCollapsed),[driveCollapsed]);
+  useEffect(()=>saveToStorage("driveExpanded",driveExpanded),[driveExpanded]);
+  useEffect(()=>saveToStorage("triggeredRules",triggeredRules),[triggeredRules]);
 
   const logA=useCallback((action,detail="",loc=null)=>{
     setActionLog(p=>[...p,{ts:Date.now(),action,detail,loc}]);
@@ -189,15 +193,19 @@ export default function App(){
     ruleCheckRef.current=setInterval(()=>{
       const rule=rules.find(r=>r.id===selectedRule);
       if(!rule) return;
+      if(triggeredRules.includes(rule.id)) return;
+      
       const elapsed=Date.now()-work.start-calcPMs(work,Date.now());
       const ruleMs=((rule.hours*60)+rule.minutes)*60*1000;
+      
       if(elapsed>=ruleMs){
         sendNotification("⏱ Regel: "+rule.text,{body:rule.text,icon:"⏱"});
         logA("REGEL_TRIGGER",rule.text,curLoc);
+        setTriggeredRules(t=>[...t,rule.id]);
       }
     },30000);
     return()=>clearInterval(ruleCheckRef.current);
-  },[work,rules,selectedRule,curLoc]);
+  },[work,rules,selectedRule,curLoc,triggeredRules]);
 
   const wNet=calcNet(work,now),wPMs=calcPMs(work,now);
   const dNet=calcNet(drive,now),dPMs=calcPMs(drive,now);
@@ -207,7 +215,6 @@ export default function App(){
   const wOver=ARV_WORK.filter(r=>wH>=r.h);
   const dWarn=ARV_DRIVE.filter(r=>dH>=r.h-0.25&&dH<r.h);
   const dOver=ARV_DRIVE.filter(r=>dH>=r.h);
-  const nextW=ARV_WORK.find(r=>wH<r.h);
 
   const wCol=wH>=9?"#ef4444":wH>=7?"#f97316":wH>=5.5?"#eab308":"#22c55e";
   const dCol=dH>=4.5?"#ef4444":dH>=4.25?"#f97316":"#3b82f6";
@@ -269,6 +276,7 @@ export default function App(){
     setWorkSessions(p=>[...p,{...w,end:ts,netMs:calcNet({...w,end:ts},ts),pauseMs:calcPMs({...w,end:ts},ts),location:curLoc,stars,comment}]);
     logA("AUSSTEMPELN",`★${stars}${comment?" | "+comment:""}`,curLoc);
     setWork(null);setShowWorkDot(true);
+    setTriggeredRules([]);
     setShowInlineNote(false);setInlineNoteText("");
     if(view==="notizen")setView("tracker");
     setRatingModal(false);setDayStars(0);setDayComment("");
@@ -293,19 +301,10 @@ export default function App(){
     const ctx=canvas.getContext("2d");
     ctx.drawImage(cameraRef.current,0,0);
     const imageData=canvas.toDataURL("image/jpeg",0.8);
-    if(editNoteId){
-      addImageToNote(editNoteId,imageData);
-    }else if(notes.length>0){
+    if(notes.length>0){
       addImageToNote(notes[notes.length-1].id,imageData);
     }
     setCameraOpen(false);
-  };
-
-  const saveEditNote=()=>{
-    if(!editNoteText.trim())return;
-    setNotes(ns=>ns.map(n=>n.id===editNoteId?{...n,text:editNoteText,edited:Date.now()}:n));
-    logA("NOTIZ_BEARBEITET",editNoteText.trim().slice(0,60),curLoc);
-    setEditNoteId(null);setEditNoteText("");
   };
 
   const createRule=()=>{
@@ -455,42 +454,47 @@ export default function App(){
 
             {work&&(
               <>
-                {!driveCollapsed?(
-                  <div style={C(drive?dCol+"50":t.border)}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:drive?14:0}}>
-                      <span style={{fontSize:11,fontWeight:500,color:t.hint,textTransform:"uppercase"}}>Lenkzeit</span>
-                      {drive&&showDriveDot&&(<button onClick={()=>setShowDriveDot(false)} style={{background:"none",border:"none",cursor:"pointer",padding:2}}><div className="dpf" style={{width:9,height:9,borderRadius:"50%",background:dCol}}/></button>)}
-                    </div>
-                    {drive?(
-                      <>
-                        <div style={{textAlign:"center",padding:"6px 0 14px"}}>
-                          <div style={{fontSize:58,fontWeight:400,fontVariantNumeric:"tabular-nums",letterSpacing:"-0.03em",color:dCol,lineHeight:1}}>{fmtMs(dNet)}</div>
-                          {dPMs>0&&<div style={{fontSize:12,color:t.hint,marginTop:5}}>Pausen {fmtMs(dPMs)}</div>}
-                        </div>
-                        <div style={{display:"flex",gap:8,marginTop:4}}>
-                          <button onClick={handleDrivePause} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`)}>{drive.paused?"▶":"⏸"}</button>
-                          <button onClick={stopDrive} style={Btn("#3b82f614","#3b82f6","0.5px solid #3b82f640")}>⏹ Fahrt Ende</button>
-                          <button onClick={()=>setDriveCollapsed(true)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>⬇ Einklappen</button>
-                        </div>
-                      </>
-                    ):(
-                      <div style={{paddingTop:14}}>
-                        <button onClick={()=>setRuleDialogOpen(true)} disabled={work.paused} style={{width:"100%",padding:"11px",background:work.paused?"#3b82f608":"#3b82f614",border:"0.5px solid #3b82f640",borderRadius:8,color:work.paused?"#3b82f650":"#3b82f6",fontSize:13,fontWeight:500,cursor:work.paused?"default":"pointer"}}>🚗 Fahrt starten</button>
+                {!driveExpanded?<div style={C(drive?dCol+"50":t.border,0,0)}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setDriveExpanded(true)}>
+                    <div style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
+                      <span style={{fontSize:20}}>🚗</span>
+                      <div>
+                        <div style={{fontSize:12,fontWeight:500,color:t.text}}>Fahrt-Modus</div>
+                        {drive?<div style={{fontSize:14,fontWeight:500,color:dCol}}>{fmtMs(dNet)}</div>:<div style={{fontSize:12,color:t.hint}}>Tippen zum Starten</div>}
                       </div>
-                    )}
-                  </div>
-                ):(
-                  <div style={C(dCol+"50")}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <span style={{fontSize:13,fontWeight:500}}>🚗 Fahrt: {fmtMs(dNet)}</span>
-                      <button onClick={()=>setDriveCollapsed(false)} style={{padding:"5px 10px",borderRadius:6,border:`0.5px solid ${t.border}`,background:"transparent",fontSize:11,cursor:"pointer"}}>⬆ Ausklappen</button>
                     </div>
-                    <div style={{display:"flex",gap:8,marginTop:8}}>
-                      <button onClick={handleDrivePause} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`,10)}>{drive?.paused?"▶":"⏸"}</button>
-                      <button onClick={stopDrive} style={Btn("#ef444414","#ef4444","0.5px solid #ef444440",10)}>⏹</button>
-                    </div>
+                    {drive&&showDriveDot&&(<button onClick={e=>{e.stopPropagation();setShowDriveDot(false);}} style={{background:"none",border:"none",cursor:"pointer",padding:2}}><div className="dpf" style={{width:9,height:9,borderRadius:"50%",background:dCol}}/></button>)}
+                    <span style={{fontSize:16}}>▼</span>
                   </div>
-                )}
+                  {drive&&<div style={{display:"flex",gap:6,marginTop:10}}>
+                    <button onClick={e=>{e.stopPropagation();handleDrivePause();}} style={{padding:"6px 12px",borderRadius:6,border:`0.5px solid ${t.border}`,background:"transparent",fontSize:12,cursor:"pointer",flex:1}}>{drive.paused?"▶":"⏸"}</button>
+                    <button onClick={e=>{e.stopPropagation();stopDrive();}} style={{padding:"6px 12px",borderRadius:6,background:"#ef444414",border:"0.5px solid #ef444440",fontSize:12,color:"#ef4444",cursor:"pointer",flex:1}}>⏹</button>
+                  </div>}
+                </div>:<div style={C(dCol+"50")}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                    <span style={{fontSize:11,fontWeight:500,color:t.hint,textTransform:"uppercase"}}>Lenkzeit</span>
+                    {drive&&showDriveDot&&(<button onClick={()=>setShowDriveDot(false)} style={{background:"none",border:"none",cursor:"pointer",padding:2}}><div className="dpf" style={{width:9,height:9,borderRadius:"50%",background:dCol}}/></button>)}
+                  </div>
+                  {drive?(
+                    <>
+                      <div style={{textAlign:"center",padding:"6px 0 14px"}}>
+                        <div style={{fontSize:58,fontWeight:400,fontVariantNumeric:"tabular-nums",letterSpacing:"-0.03em",color:dCol,lineHeight:1}}>{fmtMs(dNet)}</div>
+                        {dPMs>0&&<div style={{fontSize:12,color:t.hint,marginTop:5}}>Pausen {fmtMs(dPMs)}</div>}
+                      </div>
+                      {dOver.map(r=><div key={r.h} style={{background:"#ef444414",border:"0.5px solid #ef444450",borderRadius:8,padding:"7px 12px",fontSize:12,color:"#ef4444",marginBottom:6}}>⚠ {r.label}</div>)}
+                      {dWarn.map(r=><div key={r.h} style={{background:"#f9731612",border:"0.5px solid #f9731640",borderRadius:8,padding:"7px 12px",fontSize:12,color:"#f97316",marginBottom:6}}>⏰ {r.label}</div>)}
+                      <div style={{display:"flex",gap:8,marginTop:4}}>
+                        <button onClick={handleDrivePause} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`)}>{drive.paused?"▶":"⏸"}</button>
+                        <button onClick={stopDrive} style={Btn("#3b82f614","#3b82f6","0.5px solid #3b82f640")}>⏹ Ende</button>
+                        <button onClick={()=>setDriveExpanded(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>⬇ Einklappen</button>
+                      </div>
+                    </>
+                  ):(
+                    <div style={{paddingTop:14}}>
+                      <button onClick={()=>setRuleDialogOpen(true)} disabled={work.paused} style={{width:"100%",padding:"11px",background:work.paused?"#3b82f608":"#3b82f614",border:"0.5px solid #3b82f640",borderRadius:8,color:work.paused?"#3b82f650":"#3b82f6",fontSize:13,fontWeight:500,cursor:work.paused?"default":"pointer"}}>🚗 Fahrt starten</button>
+                    </div>
+                  )}
+                </div>}
               </>
             )}
 
@@ -515,7 +519,7 @@ export default function App(){
           <div style={C()}>
             <div style={{fontWeight:500,fontSize:14,marginBottom:14}}>GPS-Intervall</div>
             {[{v:10,l:"Alle 10 Min"},{v:30,l:"Alle 30 Min"},{v:60,l:"Alle 60 Min"},{v:0,l:"Aus"}].map(opt=>(
-              <button key={opt.v} onClick={()=>setGpsInterval(opt.v)} style={{width:"100%",padding:"12px",borderRadius:8,border:`2px solid ${gpsInterval===opt.v?"#6366f1":t.border}`,background:gpsInterval===opt.v?"#6366f114":"transparent",color:gpsInterval===opt.v?"#6366f1":t.text,fontSize:13,fontWeight:500,cursor:"pointer",marginBottom:8}}>{gpsInterval===opt.v?"✓ ":""}{opt.l}</button>
+              <button key={opt.v} onClick={()=>setGpsInterval(opt.v)} style={{width:"100%",padding:"12px",borderRadius:8,border:`2px solid ${gpsInterval===opt.v?"#6366f1":t.border}`,background:gpsInterval===opt.v?"#6366f114":"transparent",color:gpsInterval===opt.v?"#6366f1":t.text,fontSize:13,fontWeight:500,cursor:"pointer",marginBottom:8,textAlign:"left"}}>{gpsInterval===opt.v?"✓ ":""}{opt.l}</button>
             ))}
           </div>
         )}
@@ -577,10 +581,8 @@ export default function App(){
                     <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:4}}>
                       <span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:s.type==="Fahrt"?"#3b82f614":s.type==="GPS"?"#f9731614":"#6366f114",color:s.type==="Fahrt"?"#3b82f6":s.type==="GPS"?"#f97316":"#6366f1"}}>{s.type}</span>
                       {s.taetigkeit&&<span style={{color:t.hint}}>{s.taetigkeit}</span>}
-                      {s.stars>0&&<span>{"★".repeat(s.stars)}</span>}
                     </div>
                     <div style={{color:t.hint}}>{fmtDate(s.ts||s.start)} {fmtTime(s.ts||s.start)}{s.type!=="GPS"?`–${fmtTime(s.end)}`:""}</div>
-                    {s.type==="GPS"&&<div style={{color:t.hint,fontSize:11}}>{s.lat?.toFixed(4)}, {s.lng?.toFixed(4)}</div>}
                   </div>
                 ));
               })()}
