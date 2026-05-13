@@ -1,8 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { checkStorageAndWarn, logPageLoad, logCSVExport } from "./utils/rateLimiter";
+import { useState, useEffect, useRef } from "react";
 
 const ARV_WORK  = [{h:5.5,label:"15 Min. Pause"},{h:7,label:"30 Min. Pause"},{h:9,label:"1 Std. Pause"}];
-const ARV_DRIVE = [{h:4.5,label:"45 Min. Pflichtpause (ARV 1)"},{h:9,label:"Tageslimit Lenkzeit"}];
+const ARV_DRIVE = [{h:4.5,label:"45 Min. Pflichtpause"},{h:9,label:"Tageslimit Lenkzeit"}];
 
 function pad(n){return String(n).padStart(2,"0");}
 function fmtMs(ms){const s=Math.floor(Math.max(0,ms)/1000);return`${pad(Math.floor(s/3600))}:${pad(Math.floor((s%3600)/60))}:${pad(s%60)}`;}
@@ -107,7 +106,6 @@ export default function App(){
   const [ruleManagerOpen,setRuleManagerOpen]=useState(false);
   const [notificationEnabled,setNotificationEnabled]=useState(true);
   const [triggeredRules,setTriggeredRules]=useState([]);
-  const [dashboardFilters,setDashboardFilters]=useState({gps:false,notes:false,daysBack:7});
   const [showPersistentPrompt,setShowPersistentPrompt]=useState(false);
 
   const [taetigkeitModal,setTaetigkeitModal]=useState(false);
@@ -125,13 +123,11 @@ export default function App(){
   const [confirmStop,setConfirmStop]=useState(false);
   const [ratingModal,setRatingModal]=useState(false);
   const [dayStars,setDayStars]=useState(0);
-  const [dayComment,setDayComment]=useState("");
 
   const [notes,setNotes]=useState([]);
   const [showInlineNote,setShowInlineNote]=useState(false);
   const [inlineNoteText,setInlineNoteText]=useState("");
 
-  const [actionLog,setActionLog]=useState([]);
   const [curLoc,setCurLoc]=useState(null);
   const [gpsLog,setGpsLog]=useState([]);
   const [showWorkDot,setShowWorkDot]=useState(true);
@@ -139,17 +135,10 @@ export default function App(){
   const [now,setNow]=useState(Date.now());
   const tickRef=useRef(null);
   const gpsRef=useRef(null);
-  const ruleCheckRef=useRef(null);
 
   const [exportModal,setExportModal]=useState(false);
-  const [exportFromDate,setExportFromDate]=useState("");
-  const [exportToDate,setExportToDate]=useState("");
-
   const [deleteModal,setDeleteModal]=useState(false);
   const [deleteConfirm,setDeleteConfirm]=useState(false);
-  const [deleteFromDate,setDeleteFromDate]=useState("");
-  const [deleteToDate,setDeleteToDate]=useState("");
-  const [deleteAll,setDeleteAll]=useState(false);
 
   const pwaActive=isPWA();
 
@@ -162,12 +151,10 @@ export default function App(){
         const ws=await loadFromStorage("workSessions",[]);
         const ds=await loadFromStorage("driveSessions",[]);
         const n=await loadFromStorage("notes",[]);
-        const al=await loadFromStorage("actionLog",[]);
         const gl=await loadFromStorage("gpsLog",[]);
         const gi=await loadFromStorage("gpsInterval",10);
         const r=await loadFromStorage("rules",[]);
         const ne=await loadFromStorage("notificationEnabled",true);
-        const de=await loadFromStorage("driveExpanded",false);
         const tr=await loadFromStorage("triggeredRules",[]);
 
         if(w) setWork(w);
@@ -175,24 +162,20 @@ export default function App(){
         setWorkSessions(ws||[]);
         setDriveSessions(ds||[]);
         setNotes(n||[]);
-        setActionLog(al||[]);
         setGpsLog(gl||[]);
         setGpsInterval(gi||10);
         setRules(r||[]);
         setNotificationEnabled(ne!==false);
-        setDriveExpanded(de===true);
         setTriggeredRules(tr||[]);
 
         const persistGranted=localStorage.getItem("persistentStorageGranted");
-        if(!persistGranted){
-          setShowPersistentPrompt(true);
-        }
+        if(!persistGranted) setShowPersistentPrompt(true);
 
         if("serviceWorker" in navigator){
           navigator.serviceWorker.register("/sw.js").catch(err=>console.log("SW fail"));
         }
       }catch(e){
-        console.error("Init error:",e);
+        console.error("Init:",e);
       }
     })();
   },[]);
@@ -202,16 +185,14 @@ export default function App(){
   useEffect(()=>saveToStorage("workSessions",workSessions),[workSessions]);
   useEffect(()=>saveToStorage("driveSessions",driveSessions),[driveSessions]);
   useEffect(()=>saveToStorage("notes",notes),[notes]);
-  useEffect(()=>saveToStorage("actionLog",actionLog),[actionLog]);
   useEffect(()=>saveToStorage("gpsLog",gpsLog),[gpsLog]);
   useEffect(()=>saveToStorage("gpsInterval",gpsInterval),[gpsInterval]);
   useEffect(()=>saveToStorage("rules",rules),[rules]);
   useEffect(()=>saveToStorage("notificationEnabled",notificationEnabled),[notificationEnabled]);
-  useEffect(()=>saveToStorage("driveExpanded",driveExpanded),[driveExpanded]);
   useEffect(()=>saveToStorage("triggeredRules",triggeredRules),[triggeredRules]);
 
   const logA=(action,detail="",loc=null)=>{
-    setActionLog(p=>[...p,{ts:Date.now(),action,detail,loc}]);
+    // Logging ohne rateLimiter
   };
 
   const sendNotification=(title,options={})=>{
@@ -245,8 +226,7 @@ export default function App(){
         const p=await getPos();
         setCurLoc(p);
         setGpsLog(g=>[...g,{ts:Date.now(),...p}]);
-        logA("GPS",locStr(p),p);
-      }catch(err){console.log("GPS fail")}
+      }catch(err){}
     };
     doGps();
     gpsRef.current=setInterval(doGps,gpsInterval*60*1000);
@@ -324,7 +304,7 @@ export default function App(){
     setShowDriveDot(true);
   };
 
-  const finalizeStop=(stars,comment)=>{
+  const finalizeStop=(stars)=>{
     const ts=Date.now();
     if(drive){
       let d=drive;
@@ -335,7 +315,7 @@ export default function App(){
     }
     let w=work;
     if(w.paused)w={...w,paused:false,pauses:w.pauses.map((p,i)=>i===w.pauses.length-1?{...p,end:ts}:p)};
-    setWorkSessions(p=>[...p,{...w,end:ts,netMs:calcNet({...w,end:ts},ts),location:curLoc,stars,comment}]);
+    setWorkSessions(p=>[...p,{...w,end:ts,netMs:calcNet({...w,end:ts},ts),location:curLoc,stars}]);
     logA("AUSSTEMPELN",`★${stars}`,curLoc);
     setWork(null);
     setShowWorkDot(true);
@@ -343,7 +323,6 @@ export default function App(){
     setInlineNoteText("");
     setRatingModal(false);
     setDayStars(0);
-    setDayComment("");
   };
 
   const saveInlineNote=()=>{
@@ -364,18 +343,14 @@ export default function App(){
     if(selectedRule===ruleId) setSelectedRule("standard");
   };
 
-  const exportCSV=(fromStr,toStr)=>{
-    const from=fromStr?new Date(fromStr).getTime():0;
-    const to=toStr?new Date(toStr).getTime()+86400000:Date.now();
-    const filteredWorks=workSessions.filter(s=>s.start>=from&&s.start<to);
-    const filteredDrives=driveSessions.filter(s=>s.start>=from&&s.start<to);
+  const exportCSV=()=>{
     const hdr="type,datum,start_time,end_time,netto_hours,activity,rating,location_lat,location_lng";
     const rows=[
-      ...filteredWorks.map(s=>{
+      ...workSessions.map(s=>{
         const locData=s.location?`"${s.location.lat}","${s.location.lng}"`:'"",""';
         return `"Arbeit","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${s.taetigkeit||""}","${s.stars||0}",${locData}`;
       }),
-      ...filteredDrives.map(s=>{
+      ...driveSessions.map(s=>{
         const locData=s.location?`"${s.location.lat}","${s.location.lng}"`:'"",""';
         return `"Fahrt","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","","","",${locData}`;
       })
@@ -385,11 +360,11 @@ export default function App(){
     setExportModal(false);
   };
 
-  const deleteData=(fromStr,toStr)=>{
-    const from=fromStr?new Date(fromStr).getTime():0;
-    const to=toStr?new Date(toStr).getTime()+86400000:Date.now();
-    setWorkSessions(ws=>ws.filter(s=>!(s.start>=from&&s.start<to)));
-    setDriveSessions(ds=>ds.filter(s=>!(s.start>=from&&s.start<to)));
+  const deleteData=()=>{
+    setWorkSessions([]);
+    setDriveSessions([]);
+    setNotes([]);
+    setGpsLog([]);
     setDeleteModal(false);
   };
 
@@ -423,7 +398,7 @@ export default function App(){
         <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:9998}}>
           <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto"}}>
             <div style={{fontWeight:600,fontSize:16,marginBottom:8}}>🔒 Daten schützen</div>
-            <div style={{fontSize:13,color:t.muted,marginBottom:20}}>ZeitTracker möchte deine Daten dauerhaft speichern.</div>
+            <div style={{fontSize:13,color:t.muted,marginBottom:20}}>IndexedDB + Persistent Storage = Daten bleiben auch nach Handy-Reinigung!</div>
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>setShowPersistentPrompt(false)} style={{padding:"12px",flex:1,borderRadius:8,border:`0.5px solid ${t.border}`,background:"transparent",color:t.text,cursor:"pointer"}}>⏭ Später</button>
               <button onClick={async()=>{await requestPersistentStorage();setShowPersistentPrompt(false);}} style={{padding:"12px",flex:1,borderRadius:8,background:"#6366f1",color:"white",cursor:"pointer"}}>✅ Erlauben</button>
@@ -444,6 +419,7 @@ export default function App(){
                 <>
                   <div style={{textAlign:"center",padding:"6px 0 14px"}}>
                     <div style={{fontSize:58,fontWeight:400,color:wCol}}>{fmtMs(wNet)}</div>
+                    {wPMs>0&&<div style={{fontSize:12,color:t.hint,marginTop:5}}>Pausen {fmtMs(wPMs)}</div>}
                   </div>
                   {wOver.map(r=><div key={r.h} style={{background:"#ef444414",border:"0.5px solid #ef444450",borderRadius:8,padding:"7px 12px",fontSize:12,color:"#ef4444",marginBottom:6}}>⚠ {r.label}</div>)}
                   {wWarn.map(r=><div key={r.h} style={{background:"#f9731612",border:"0.5px solid #f9731640",borderRadius:8,padding:"7px 12px",fontSize:12,color:"#f97316",marginBottom:6}}>⏰ {r.label}</div>)}
@@ -469,6 +445,7 @@ export default function App(){
                   <>
                     <div style={{textAlign:"center",padding:"6px 0 14px"}}>
                       <div style={{fontSize:58,fontWeight:400,color:dCol}}>{fmtMs(dNet)}</div>
+                      {dPMs>0&&<div style={{fontSize:12,color:t.hint,marginTop:5}}>Pausen {fmtMs(dPMs)}</div>}
                     </div>
                     {dOver.map(r=><div key={r.h} style={{background:"#ef444414",border:"0.5px solid #ef444450",borderRadius:8,padding:"7px 12px",fontSize:12,color:"#ef4444",marginBottom:6}}>⚠ {r.label}</div>)}
                     {dWarn.map(r=><div key={r.h} style={{background:"#f9731612",border:"0.5px solid #f9731640",borderRadius:8,padding:"7px 12px",fontSize:12,color:"#f97316",marginBottom:6}}>⏰ {r.label}</div>)}
@@ -499,14 +476,14 @@ export default function App(){
 
         {view==="notizen"&&(
           <>
-            <div style={{fontWeight:500,marginBottom:14,fontSize:15}}>Notizen</div>
+            <div style={{fontWeight:500,marginBottom:14,fontSize:15}}>Notizen ({notes.length})</div>
             {notes.length===0?(
               <div style={{textAlign:"center",padding:"50px 0",color:t.hint}}>Keine Notizen</div>
             ):[...notes].reverse().map(n=>(
               <div key={n.id} style={C()}>
                 <div style={{fontSize:14,marginBottom:8}}>{n.text}</div>
                 <div style={{fontSize:11,color:t.hint,display:"flex",justifyContent:"space-between"}}>
-                  <span>{fmtDate(n.ts)}</span>
+                  <span>{fmtDate(n.ts)} {fmtTime(n.ts)}</span>
                   <button onClick={()=>setNotes(ns=>ns.filter(x=>x.id!==n.id))} style={{border:"none",background:"none",color:"#ef4444",cursor:"pointer"}}>✕</button>
                 </div>
               </div>
@@ -519,14 +496,15 @@ export default function App(){
             <div style={{fontWeight:500,marginBottom:12}}>Dashboard</div>
             <div style={C()}>
               <div style={{display:"flex",gap:8,marginBottom:12}}>
-                <button onClick={()=>setExportModal(true)} style={{padding:"6px 12px",borderRadius:7,border:`0.5px solid ${t.border}`,background:"transparent",color:t.muted,fontSize:12,cursor:"pointer"}}>↓ CSV</button>
-                <button onClick={()=>setDeleteModal(true)} style={{padding:"6px 12px",borderRadius:7,border:"0.5px solid #ef444440",background:"transparent",color:"#ef4444",fontSize:12,cursor:"pointer"}}>🗑 Delete</button>
+                <button onClick={()=>setExportModal(true)} style={{padding:"6px 12px",borderRadius:7,border:`0.5px solid ${t.border}`,background:"transparent",color:t.muted,fontSize:12,cursor:"pointer"}}>↓ CSV Export</button>
+                <button onClick={()=>setDeleteModal(true)} style={{padding:"6px 12px",borderRadius:7,border:"0.5px solid #ef444440",background:"transparent",color:"#ef4444",fontSize:12,cursor:"pointer"}}>🗑 Delete All</button>
               </div>
               {workSessions.length===0?(
-                <div style={{textAlign:"center",color:t.hint}}>Keine Einträge</div>
-              ):workSessions.slice(-10).reverse().map((s,i)=>(
+                <div style={{textAlign:"center",color:t.hint,padding:"30px"}}>Keine Einträge</div>
+              ):workSessions.slice(-15).reverse().map((s,i)=>(
                 <div key={i} style={{padding:"10px 0",borderBottom:`0.5px solid ${t.border}`,fontSize:12}}>
-                  <div style={{color:t.text}}>{fmtDate(s.start)} {fmtTime(s.start)}–{fmtTime(s.end)} ({toH(s.netMs).toFixed(2)}h) {s.taetigkeit}</div>
+                  <div style={{color:t.text}}>📋 {fmtDate(s.start)} {fmtTime(s.start)}–{fmtTime(s.end)} ({toH(s.netMs).toFixed(2)}h) {s.taetigkeit}</div>
+                  {s.stars&&<div style={{color:t.hint}}>★{s.stars}</div>}
                 </div>
               ))}
             </div>
@@ -537,7 +515,7 @@ export default function App(){
       {ruleDialogOpen&&(
         <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
           <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto"}}>
-            <div style={{fontWeight:500,marginBottom:16}}>Regel</div>
+            <div style={{fontWeight:500,marginBottom:16}}>Regel wählen</div>
             {[{id:"standard",name:"Keine"},...rules].map(opt=>(
               <button key={opt.id} onClick={()=>{setSelectedRule(opt.id);setRuleDialogOpen(false);setDrive({start:Date.now(),pauses:[],paused:false});}} style={{width:"100%",padding:"12px",borderRadius:8,border:`2px solid ${selectedRule===opt.id?"#6366f1":t.border}`,background:selectedRule===opt.id?"#6366f114":"transparent",color:t.text,fontSize:13,cursor:"pointer",marginBottom:8}}>{selectedRule===opt.id?"✓ ":""}  {opt.name||opt.text}</button>
             ))}
@@ -546,28 +524,39 @@ export default function App(){
         </div>
       )}
 
-      {confirmStop&&(
+      {ruleManagerOpen&&(
         <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
-          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto"}}>
-            <div style={{fontWeight:500,marginBottom:16}}>Beenden?</div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>setConfirmStop(false)} style={Btn(t.s2,t.muted)}>Nein</button>
-              <button onClick={()=>{setConfirmStop(false);setRatingModal(true);}} style={Btn("#6366f1","white")}>Ja</button>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",maxHeight:"80vh",overflowY:"auto"}}>
+            <div style={{fontWeight:500,marginBottom:16}}>Regeln</div>
+            <div style={{marginBottom:16,padding:12,background:t.s2,borderRadius:8}}>
+              <div style={{fontSize:12,color:t.hint,marginBottom:8}}>Neue Regel</div>
+              <div style={{display:"flex",gap:8,marginBottom:8}}>
+                <input type="number" value={newRuleHours} onChange={e=>setNewRuleHours(Math.max(0,parseInt(e.target.value)||0))} min="0" style={{width:"50px",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text}}/>
+                <span>:</span>
+                <input type="number" value={newRuleMinutes} onChange={e=>setNewRuleMinutes(Math.min(59,Math.max(0,parseInt(e.target.value)||0)))} min="0" max="59" style={{width:"50px",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text}}/>
+              </div>
+              <input type="text" value={newRuleText} onChange={e=>setNewRuleText(e.target.value)} placeholder="Text" style={{width:"100%",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text,marginBottom:8,boxSizing:"border-box"}}/>
+              <button onClick={createRule} disabled={!newRuleText.trim()} style={{width:"100%",padding:"8px",background:newRuleText.trim()?"#6366f1":"#6366f140",border:"none",borderRadius:6,color:"white",fontSize:12,cursor:"pointer"}}>+ Add</button>
             </div>
+            {rules.map(r=>(
+              <div key={r.id} style={{padding:10,background:t.s2,borderRadius:8,display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                <div><div style={{fontWeight:500,fontSize:12}}>{r.text}</div><div style={{color:t.hint,fontSize:11}}>{pad(r.hours)}:{pad(r.minutes)}</div></div>
+                <button onClick={()=>deleteRule(r.id)} style={{padding:"4px 8px",background:"#ef444414",border:"none",borderRadius:6,color:"#ef4444",fontSize:11,cursor:"pointer"}}>Delete</button>
+              </div>
+            ))}
+            <button onClick={()=>setRuleManagerOpen(false)} style={{width:"100%",marginTop:16,padding:"10px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,color:t.text,cursor:"pointer"}}>Close</button>
           </div>
         </div>
       )}
 
-      {ratingModal&&(
+      {drivepauseModal&&(
         <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
           <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto"}}>
-            <div style={{fontWeight:500,marginBottom:16}}>Rating?</div>
-            <div style={{display:"flex",gap:8,justifyContent:"center",marginBottom:18}}>
-              {[1,2,3,4,5].map(s=>(
-                <button key={s} onClick={()=>setDayStars(s)} style={{background:"none",border:`2px solid ${s<=dayStars?"#6366f1":t.border}`,borderRadius:8,fontSize:32,cursor:"pointer",opacity:s<=dayStars?1:0.3,padding:"8px"}}>★</button>
-              ))}
+            <div style={{fontWeight:500,marginBottom:16}}>Arbeitszeit auch pausieren?</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>confirmDrivePause(false)} style={Btn(t.s2,t.muted)}>Nur Fahrt</button>
+              <button onClick={()=>confirmDrivePause(true)} style={Btn("#6366f1","white")}>Beide</button>
             </div>
-            <button onClick={()=>finalizeStop(dayStars,"")} style={{width:"100%",padding:"12px",background:"#6366f1",border:"none",borderRadius:9,color:"white",fontWeight:500,cursor:"pointer"}}>Done</button>
           </div>
         </div>
       )}
@@ -575,10 +564,10 @@ export default function App(){
       {exportModal&&(
         <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
           <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto"}}>
-            <div style={{fontWeight:500,marginBottom:16}}>Export?</div>
+            <div style={{fontWeight:500,marginBottom:16}}>CSV exportieren?</div>
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>setExportModal(false)} style={Btn(t.s2,t.muted)}>Cancel</button>
-              <button onClick={()=>exportCSV("","")} style={Btn("#6366f1","white")}>Export</button>
+              <button onClick={exportCSV} style={Btn("#6366f1","white")}>✓ Export</button>
             </div>
           </div>
         </div>
@@ -589,18 +578,19 @@ export default function App(){
           <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto"}}>
             {!deleteConfirm?(
               <>
-                <div style={{fontWeight:500,marginBottom:16}}>Löschen?</div>
+                <div style={{fontWeight:500,marginBottom:16}}>⚠️ Alle Daten löschen?</div>
                 <div style={{display:"flex",gap:8}}>
                   <button onClick={()=>setDeleteModal(false)} style={Btn(t.s2,t.muted)}>Cancel</button>
-                  <button onClick={()=>setDeleteConfirm(true)} style={Btn("#ef4444","white")}>Delete</button>
+                  <button onClick={()=>setDeleteConfirm(true)} style={Btn("#ef4444","white")}>Weiter</button>
                 </div>
               </>
             ):(
               <>
-                <div style={{fontWeight:500,marginBottom:16}}>Sure?</div>
+                <div style={{fontWeight:500,marginBottom:16}}>BESTÄTIGUNG</div>
+                <div style={{fontSize:13,color:"#ef4444",marginBottom:16}}>Alle Daten werden unwiederbringlich gelöscht!</div>
                 <div style={{display:"flex",gap:8}}>
-                  <button onClick={()=>setDeleteConfirm(false)} style={Btn(t.s2,t.muted)}>Back</button>
-                  <button onClick={()=>{deleteData(null,null);setDeleteModal(false);}} style={Btn("#ef4444","white")}>Confirm</button>
+                  <button onClick={()=>setDeleteConfirm(false)} style={Btn(t.s2,t.muted)}>Zurück</button>
+                  <button onClick={deleteData} style={Btn("#ef4444","white")}>✓ Löschen</button>
                 </div>
               </>
             )}
@@ -612,7 +602,7 @@ export default function App(){
         <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
           <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto"}}>
             <div style={{fontWeight:500,marginBottom:16}}>Tätigkeit?</div>
-            <input autoFocus value={taetigkeitInput} onChange={e=>setTaetigkeitInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")startWork();}} placeholder="z.B. Fahrer..." style={{width:"100%",padding:"12px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:9,color:t.text,marginBottom:12,boxSizing:"border-box"}}/>
+            <input autoFocus value={taetigkeitInput} onChange={e=>setTaetigkeitInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")startWork();}} placeholder="z.B. Fahrer, Lager..." style={{width:"100%",padding:"12px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:9,color:t.text,marginBottom:12,boxSizing:"border-box"}}/>
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>setTaetigkeitModal(false)} style={Btn(t.s2,t.muted)}>Cancel</button>
               <button onClick={startWork} style={Btn("#6366f1","white")}>Start</button>
@@ -621,9 +611,36 @@ export default function App(){
         </div>
       )}
 
+      {confirmStop&&(
+        <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto"}}>
+            <div style={{fontWeight:500,marginBottom:16}}>Schicht beenden?</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setConfirmStop(false)} style={Btn(t.s2,t.muted)}>Nein</button>
+              <button onClick={()=>{setConfirmStop(false);setRatingModal(true);}} style={Btn("#6366f1","white")}>Ja</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {ratingModal&&(
+        <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto"}}>
+            <div style={{fontWeight:500,marginBottom:16}}>Wie war dein Tag?</div>
+            <div style={{display:"flex",gap:8,justifyContent:"center",marginBottom:18}}>
+              {[1,2,3,4,5].map(s=>(
+                <button key={s} onClick={()=>setDayStars(s)} style={{background:"none",border:`2px solid ${s<=dayStars?"#6366f1":t.border}`,borderRadius:8,fontSize:32,cursor:"pointer",opacity:s<=dayStars?1:0.3,padding:"8px"}}>★</button>
+              ))}
+            </div>
+            <button onClick={()=>finalizeStop(dayStars)} style={{width:"100%",padding:"12px",background:"#6366f1",border:"none",borderRadius:9,color:"white",fontWeight:500,cursor:"pointer"}}>Abschließen</button>
+          </div>
+        </div>
+      )}
+
       <div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",zIndex:100,display:"flex",gap:8}}>
         <button onClick={()=>setDark(d=>!d)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,cursor:"pointer"}}>☀/🌙</button>
         <button onClick={()=>setTransparent(tr=>!tr)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,cursor:"pointer"}}>🔷</button>
+        <button onClick={()=>setRuleManagerOpen(true)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,cursor:"pointer"}}>⚙</button>
       </div>
     </div>
   );
