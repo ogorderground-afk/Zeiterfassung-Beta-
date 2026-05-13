@@ -45,7 +45,7 @@ export default function App(){
   const [storageWarning,setStorageWarning]=useState(null);
   const [gpsInterval,setGpsInterval]=useState(10);
   const [drivepauseModal,setDrivepauseModal]=useState(false);
-  const [driveExpanded,setDriveExpanded]=useState(false);
+  const [driveExpanded,setDriveExpanded]=useState(false); // ← STARTS COLLAPSED!
   const [ruleDialogOpen,setRuleDialogOpen]=useState(false);
   const [selectedRule,setSelectedRule]=useState("standard");
   const [ruleManagerOpen,setRuleManagerOpen]=useState(false);
@@ -97,8 +97,6 @@ export default function App(){
   const [deleteFromDate,setDeleteFromDate]=useState("");
   const [deleteToDate,setDeleteToDate]=useState("");
   const [deleteAll,setDeleteAll]=useState(false);
-
-  const pwaActive=isPWA();
 
   useEffect(()=>{
     const limitCheck=logPageLoad();
@@ -239,27 +237,17 @@ export default function App(){
   };
 
   const handleDrivePause=()=>{
-    const ts=Date.now();
-    if(!drive.paused){
-      setDrivepauseModal(true);
-    }else{
-      const pauseWork=drive.workAlsoPaused||false;
-      logA("PAUSE_ENDE","Lenkzeit",curLoc);
-      setDrive(d=>({...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)}));
-      if(pauseWork){
-        logA("PAUSE_ENDE","Arbeitszeit (mit Lenkzeit)",curLoc);
-        setWork(w=>({...w,paused:false,pauses:w.pauses.map((p,i)=>i===w.pauses.length-1?{...p,end:ts}:p)}));
-      }
-    }
+    setDrivepauseModal(true);
   };
 
   const confirmDrivePause=(pauseWork)=>{
     const ts=Date.now();
-    logA("PAUSE_START","Lenkzeit",curLoc);
-    setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}],workAlsoPaused:pauseWork}));
-    if(pauseWork){
-      logA("PAUSE_START","Arbeitszeit (mit Lenkzeit)",curLoc);
-      setWork(w=>({...w,paused:true,pauses:[...w.pauses,{start:ts}]}));
+    if(!drive.paused){
+      logA("PAUSE_START","Lenkzeit",curLoc);
+      setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}]}));
+    }else{
+      logA("PAUSE_ENDE","Lenkzeit",curLoc);
+      setDrive(d=>({...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)}));
     }
     setDrivepauseModal(false);
   };
@@ -410,9 +398,14 @@ export default function App(){
     <div style={{fontFamily:"system-ui,-apple-system,sans-serif",background:t.bg,minHeight:"100vh",color:t.text}}>
       <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}body{margin:0;padding:0}`}</style>
 
-      {!pwaActive&&<div style={{position:"fixed",top:0,left:0,right:0,background:"#ef4444",color:"white",padding:"16px",fontSize:"16px",fontWeight:"600",textAlign:"center",zIndex:9999,boxShadow:"0 4px 12px rgba(0,0,0,0.3)"}}>🚨 BROWSER: Installiere die App zuerst!</div>}
+      {!isPWA()&&(
+        <div style={{background:"#6366f1",color:"white",padding:"12px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12}}>
+          <span>📱 Als App installieren</span>
+          <button onClick={()=>{const a=document.createElement("a");a.href=window.location.href;a.download="ZeitTracker.html";a.click();}} style={{background:"white",color:"#6366f1",border:"none",padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:500,cursor:"pointer"}}>⬇ Download</button>
+        </div>
+      )}
 
-      <nav style={{background:t.card,borderBottom:`0.5px solid ${t.border}`,padding:"11px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",backdropFilter:t.backdrop,marginTop:pwaActive?0:"50px"}}>
+      <nav style={{background:t.card,borderBottom:`0.5px solid ${t.border}`,padding:"11px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",backdropFilter:t.backdrop}}>
         <div style={{fontWeight:600,fontSize:15,display:"flex",alignItems:"center",gap:8}}>
           <div style={{width:26,height:26,background:"#6366f1",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:13}}>⏱</div>
           ZeitTracker
@@ -454,8 +447,7 @@ export default function App(){
                 </>
               ):(
                 <div style={{paddingTop:14}}>
-                  <button onClick={()=>{if(pwaActive){setTaetigkeitModal(true);setTaetigkeitInput("");}}} disabled={!pwaActive} style={{width:"100%",padding:"13px",background:pwaActive?"#6366f1":"#6366f140",border:"none",borderRadius:10,color:pwaActive?"white":"#6366f180",fontSize:15,fontWeight:500,cursor:pwaActive?"pointer":"not-allowed"}}>▶ Einstempeln</button>
-                  {!pwaActive&&<div style={{fontSize:11,color:"#ef4444",marginTop:8,textAlign:"center"}}>⚠️ App zuerst installieren</div>}
+                  <button onClick={()=>{setTaetigkeitModal(true);setTaetigkeitInput("");}} style={{width:"100%",padding:"13px",background:"#6366f1",border:"none",borderRadius:10,color:"white",fontSize:15,fontWeight:500,cursor:"pointer"}}>▶ Einstempeln</button>
                 </div>
               )}
             </div>
@@ -463,7 +455,7 @@ export default function App(){
             {work&&(
               <>
                 {!driveExpanded?<div style={C(drive?dCol+"50":t.border,0,0)}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:pwaActive?"pointer":"default"}} onClick={()=>{if(pwaActive)setDriveExpanded(true);}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setDriveExpanded(true)}>
                     <div style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
                       <span style={{fontSize:20}}>🚗</span>
                       <div>
@@ -499,8 +491,7 @@ export default function App(){
                     </>
                   ):(
                     <div style={{paddingTop:14}}>
-                      <button onClick={()=>{if(pwaActive)setRuleDialogOpen(true);}} disabled={!pwaActive||work.paused} style={{width:"100%",padding:"11px",background:pwaActive&&!work.paused?"#3b82f614":"#3b82f608",border:"0.5px solid #3b82f640",borderRadius:8,color:pwaActive&&!work.paused?"#3b82f6":"#3b82f650",fontSize:13,fontWeight:500,cursor:pwaActive&&!work.paused?"pointer":"not-allowed"}}>🚗 Fahrt starten</button>
-                      {!pwaActive&&<div style={{fontSize:11,color:"#ef4444",marginTop:8,textAlign:"center"}}>⚠️ App zuerst installieren</div>}
+                      <button onClick={()=>setRuleDialogOpen(true)} disabled={work.paused} style={{width:"100%",padding:"11px",background:work.paused?"#3b82f608":"#3b82f614",border:"0.5px solid #3b82f640",borderRadius:8,color:work.paused?"#3b82f650":"#3b82f6",fontSize:13,fontWeight:500,cursor:work.paused?"default":"pointer"}}>🚗 Fahrt starten</button>
                     </div>
                   )}
                 </div>}
@@ -750,7 +741,7 @@ export default function App(){
 
       <div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",zIndex:100,display:"flex",gap:8}}>
         <button onClick={()=>setDark(d=>!d)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>☀/🌙</button>
-        <button onClick={()=>setTransparent(tr=>!tr)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔷</button>
+        <button onClick={()=>setTransparent(t=>!t)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔷</button>
         <button onClick={()=>setNotificationEnabled(n=>!n)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:notificationEnabled?"#6366f1":t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔔</button>
       </div>
     </div>
