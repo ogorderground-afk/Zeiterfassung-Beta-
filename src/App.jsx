@@ -31,7 +31,10 @@ const initDB=async()=>{
   return new Promise((resolve)=>{
     try{
       const req=indexedDB.open("ZeitTrackerDB",1);
-      req.onerror=()=>resolve(null);
+      req.onerror=()=>{
+        console.error("DB open error:",req.error);
+        resolve(null);
+      };
       req.onsuccess=()=>{
         dbInstance=req.result;
         resolve(dbInstance);
@@ -39,10 +42,17 @@ const initDB=async()=>{
       req.onupgradeneeded=(e)=>{
         try{
           const db=e.target.result;
-          if(!db.objectStoreNames.contains("data")) db.createObjectStore("data");
-        }catch(e2){}
+          if(!db.objectStoreNames.contains("data")) {
+            db.createObjectStore("data");
+          }
+        }catch(e2){
+          console.error("DB upgrade error:",e2);
+        }
       };
-    }catch(e){resolve(null);}
+    }catch(e){
+      console.error("DB error:",e);
+      resolve(null);
+    }
   });
 };
 
@@ -192,7 +202,7 @@ export default function App(){
   useEffect(()=>saveToStorage("triggeredRules",triggeredRules),[triggeredRules]);
 
   const logA=(action,detail="",loc=null)=>{
-    // Logging ohne rateLimiter
+    // Logging
   };
 
   const sendNotification=(title,options={})=>{
