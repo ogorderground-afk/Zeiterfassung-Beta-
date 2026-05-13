@@ -8,7 +8,6 @@ function pad(n){return String(n).padStart(2,"0");}
 function fmtMs(ms){const s=Math.floor(Math.max(0,ms)/1000);return`${pad(Math.floor(s/3600))}:${pad(Math.floor((s%3600)/60))}:${pad(s%60)}`;}
 function fmtTime(ts){return new Date(ts).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit"});}
 function fmtDate(ts){return new Date(ts).toLocaleDateString("de-CH");}
-function fmtFull(ts){return new Date(ts).toLocaleString("de-CH",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});}
 function toH(ms){return ms/3600000;}
 function calcNet(s,now){if(!s)return 0;const pm=s.pauses.reduce((a,p)=>a+((p.end||now)-p.start),0);return Math.max(0,(s.end||now)-s.start-pm);}
 function calcPMs(s,now){if(!s)return 0;return s.pauses.reduce((a,p)=>a+((p.end||now)-p.start),0);}
@@ -26,23 +25,71 @@ function getPos(){
 
 function locStr(l){if(!l)return"—";if(typeof l==="string")return l;return`${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`;}
 
-const saveToStorage=(key,data)=>{
-  try{localStorage.setItem(key,JSON.stringify(data));}
-  catch(e){if(e.name==="QuotaExceededError"){rateLimiter.autoCleanupOldSessions();localStorage.setItem(key,JSON.stringify(data));}else{console.error("localStorage Fehler:",e);}}
+let dbInstance=null;
+
+const initDB=async()=>{
+  if(dbInstance) return dbInstance;
+  return new Promise((resolve,reject)=>{
+    const req=indexedDB.open("ZeitTrackerDB",1);
+    req.onerror=()=>reject(req.error);
+    req.onsuccess=()=>{
+      dbInstance=req.result;
+      resolve(dbInstance);
+    };
+    req.onupgradeneeded=(e)=>{
+      const db=e.target.result;
+      if(!db.objectStoreNames.contains("data")) db.createObjectStore("data");
+    };
+  });
 };
 
-const loadFromStorage=(key,def=null)=>{
-  try{const v=localStorage.getItem(key);return v?JSON.parse(v):def;}
-  catch(e){console.error("localStorage Parse-Fehler bei",key,e);return def;}
+const saveToStorage=async(key,data)=>{
+  try{
+    localStorage.setItem(key,JSON.stringify(data));
+    try{
+      const db=await initDB();
+      const tx=db.transaction("data","readwrite");
+      tx.objectStore("data").put(data,key);
+    }catch(e){console.log("IndexedDB save failed, using localStorage only");}
+  }catch(e){console.error("Storage error:",e);}
+};
+
+const loadFromStorage=async(key,def=null)=>{
+  try{
+    const db=await initDB();
+    return new Promise((resolve)=>{
+      const tx=db.transaction("data","readonly");
+      const req=tx.objectStore("data").get(key);
+      req.onsuccess=()=>resolve(req.result||def);
+      req.onerror=()=>{
+        const local=localStorage.getItem(key);
+        resolve(local?JSON.parse(local):def);
+      };
+    });
+  }catch(e){
+    const local=localStorage.getItem(key);
+    return local?JSON.parse(local):def;
+  }
 };
 
 const isPWA=()=>window.matchMedia("(display-mode: standalone)").matches||window.navigator.standalone===true;
+
+const requestPersistentStorage=async()=>{
+  if(navigator.storage&&navigator.storage.persist){
+    try{
+      const persistent=await navigator.storage.persist();
+      if(persistent){
+        console.log("✅ Persistent Storage genehmigt!");
+        localStorage.setItem("persistentStorageGranted",JSON.stringify({ts:Date.now(),granted:true}));
+      }
+    }catch(e){console.log("Persistent Storage error:",e);}
+  }
+};
 
 export default function App(){
   const [dark,setDark]=useState(true);
   const [transparent,setTransparent]=useState(false);
   const [view,setView]=useState("tracker");
-  const [storageWarning,setStorageWarning]=useState(null);
   const [gpsInterval,setGpsInterval]=useState(10);
   const [drivepauseModal,setDrivepauseModal]=useState(false);
   const [driveExpanded,setDriveExpanded]=useState(false);
@@ -52,6 +99,7 @@ export default function App(){
   const [notificationEnabled,setNotificationEnabled]=useState(true);
   const [triggeredRules,setTriggeredRules]=useState([]);
   const [dashboardFilters,setDashboardFilters]=useState({gps:false,notes:false,daysBack:7});
+  const [showPersistentPrompt,setShowPersistentPrompt]=useState(false);
 
   const [taetigkeitModal,setTaetigkeitModal]=useState(false);
   const [taetigkeitInput,setTaetigkeitInput]=useState("");
@@ -71,12 +119,8 @@ export default function App(){
   const [dayComment,setDayComment]=useState("");
 
   const [notes,setNotes]=useState([]);
-  const [editNoteId,setEditNoteId]=useState(null);
-  const [editNoteText,setEditNoteText]=useState("");
   const [showInlineNote,setShowInlineNote]=useState(false);
   const [inlineNoteText,setInlineNoteText]=useState("");
-  const [cameraOpen,setCameraOpen]=useState(false);
-  const cameraRef=useRef(null);
 
   const [actionLog,setActionLog]=useState([]);
   const [curLoc,setCurLoc]=useState(null);
@@ -101,39 +145,46 @@ export default function App(){
   const pwaActive=isPWA();
 
   useEffect(()=>{
-    const limitCheck=logPageLoad();
-    if(limitCheck.blocked){setStorageWarning("❌ Zu viele Anfragen.");return;}
-    const quota=checkStorageAndWarn();
-    if(quota.warning){setStorageWarning(quota.warning);}
+    (async()=>{
+      const limitCheck=logPageLoad();
+      if(limitCheck.blocked) return;
+      
+      await initDB();
 
-    const w=loadFromStorage("work");
-    const d=loadFromStorage("drive");
-    const ws=loadFromStorage("workSessions",[]);
-    const ds=loadFromStorage("driveSessions",[]);
-    const n=loadFromStorage("notes",[]);
-    const al=loadFromStorage("actionLog",[]);
-    const gl=loadFromStorage("gpsLog",[]);
-    const gi=loadFromStorage("gpsInterval",10);
-    const r=loadFromStorage("rules",[]);
-    const ne=loadFromStorage("notificationEnabled",true);
-    const de=loadFromStorage("driveExpanded",false);
-    const tr=loadFromStorage("triggeredRules",[]);
+      const w=await loadFromStorage("work");
+      const d=await loadFromStorage("drive");
+      const ws=await loadFromStorage("workSessions",[]);
+      const ds=await loadFromStorage("driveSessions",[]);
+      const n=await loadFromStorage("notes",[]);
+      const al=await loadFromStorage("actionLog",[]);
+      const gl=await loadFromStorage("gpsLog",[]);
+      const gi=await loadFromStorage("gpsInterval",10);
+      const r=await loadFromStorage("rules",[]);
+      const ne=await loadFromStorage("notificationEnabled",true);
+      const de=await loadFromStorage("driveExpanded",false);
+      const tr=await loadFromStorage("triggeredRules",[]);
 
-    if(w){w._lastSave=Date.now();setWork(w);}
-    if(d){d._lastSave=Date.now();setDrive(d);}
-    setWorkSessions(ws);
-    setDriveSessions(ds);
-    setNotes(n);
-    setActionLog(al);
-    setGpsLog(gl);
-    setGpsInterval(gi);
-    setRules(r);
-    setNotificationEnabled(ne);
-    setDriveExpanded(de);
-    setTriggeredRules(tr);
-    setNow(Date.now());
+      if(w){w._lastSave=Date.now();setWork(w);}
+      if(d){d._lastSave=Date.now();setDrive(d);}
+      setWorkSessions(ws);
+      setDriveSessions(ds);
+      setNotes(n);
+      setActionLog(al);
+      setGpsLog(gl);
+      setGpsInterval(gi);
+      setRules(r);
+      setNotificationEnabled(ne);
+      setDriveExpanded(de);
+      setTriggeredRules(tr);
+      setNow(Date.now());
 
-    if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(err=>console.log("SW registration failed:",err));}
+      const persistGranted=localStorage.getItem("persistentStorageGranted");
+      if(!persistGranted){
+        setShowPersistentPrompt(true);
+      }
+
+      if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(err=>console.log("SW failed"));}
+    })();
   },[]);
 
   useEffect(()=>{if(work){const toSave={...work,_lastSave:Date.now()};saveToStorage("work",toSave);}else{localStorage.removeItem("work");}}, [work]);
@@ -196,10 +247,8 @@ export default function App(){
       const rule=rules.find(r=>r.id===selectedRule);
       if(!rule) return;
       if(triggeredRules.includes(rule.id)) return;
-      
       const elapsed=Date.now()-work.start-calcPMs(work,Date.now());
       const ruleMs=((rule.hours*60)+rule.minutes)*60*1000;
-      
       if(elapsed>=ruleMs){
         sendNotification("⏱ Regel: "+rule.text,{body:rule.text,icon:"⏱"});
         logA("REGEL_TRIGGER",rule.text,curLoc);
@@ -296,27 +345,9 @@ export default function App(){
 
   const saveInlineNote=()=>{
     if(!inlineNoteText.trim())return;
-    setNotes(n=>[...n,{id:Date.now(),text:inlineNoteText.trim(),ts:Date.now(),loc:curLoc,images:[]}]);
+    setNotes(n=>[...n,{id:Date.now(),text:inlineNoteText.trim(),ts:Date.now(),loc:curLoc}]);
     logA("NOTIZ",inlineNoteText.trim().slice(0,60),curLoc);
     setInlineNoteText("");setShowInlineNote(false);
-  };
-
-  const addImageToNote=(noteId,imageData)=>{
-    setNotes(n=>n.map(note=>note.id===noteId?{...note,images:[...(note.images||[]),{id:Date.now(),dataUrl:imageData,ts:Date.now(),size:imageData.length}]}:note));
-  };
-
-  const captureImage=()=>{
-    if(!cameraRef.current) return;
-    const canvas=document.createElement("canvas");
-    canvas.width=cameraRef.current.videoWidth;
-    canvas.height=cameraRef.current.videoHeight;
-    const ctx=canvas.getContext("2d");
-    ctx.drawImage(cameraRef.current,0,0);
-    const imageData=canvas.toDataURL("image/jpeg",0.8);
-    if(notes.length>0){
-      addImageToNote(notes[notes.length-1].id,imageData);
-    }
-    setCameraOpen(false);
   };
 
   const createRule=()=>{
@@ -334,15 +365,12 @@ export default function App(){
   };
 
   const exportCSV=(fromStr,toStr)=>{
-    const exportLimit=logCSVExport();
-    if(exportLimit.blocked){alert("Zu viele CSV-Exporte!");return;}
-
     const from=fromStr?new Date(fromStr).getTime():0;
     const to=toStr?new Date(toStr).getTime()+86400000:Date.now();
 
     const filteredWorks=workSessions.filter(s=>s.start>=from&&s.start<to);
     const filteredDrives=driveSessions.filter(s=>s.start>=from&&s.start<to);
-    const filteredNotes=notes.filter(n=>n.ts>=from&&n.ts<to&&(!n.images||n.images.length===0));
+    const filteredNotes=notes.filter(n=>n.ts>=from&&n.ts<to);
     const filteredGps=gpsLog.filter(g=>g.ts>=from&&g.ts<to);
 
     const hdr="type,datum,start_time,end_time,netto_hours,pause_minutes,activity,rating,location_lat,location_lng,location_accuracy,gps_count,comment,rule_type,altitude,speed";
@@ -387,9 +415,6 @@ export default function App(){
     setDeleteAll(false);
   };
 
-  const ws2=new Date();ws2.setDate(ws2.getDate()-ws2.getDay()+1);ws2.setHours(0,0,0,0);
-  const weekMs=workSessions.filter(s=>s.start>=ws2).reduce((s,x)=>s+x.netMs,0);
-
   const getThemeColors=()=>{
     if(transparent&&dark){
       return{bg:"rgba(15,17,23,0.7)",card:"rgba(26,29,39,0.5)",s2:"rgba(35,38,58,0.4)",border:"rgba(45,49,72,0.3)",text:"#e2e8f0",muted:"#94a3b8",hint:"#475569",backdrop:"blur(10px)"};
@@ -429,6 +454,21 @@ export default function App(){
           ))}
         </div>
       </nav>
+
+      {showPersistentPrompt&&(
+        <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:9998}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box",backdropFilter:t.backdrop}}>
+            <div style={{fontWeight:600,fontSize:16,marginBottom:8}}>🔒 Daten schützen</div>
+            <div style={{fontSize:13,color:t.muted,marginBottom:20,lineHeight:1.6}}>
+              ZeitTracker möchte deine Arbeitsdaten dauerhaft speichern. Selbst wenn du Handy-Reinigungsapps nutzt, bleiben deine Daten erhalten.
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setShowPersistentPrompt(false)} style={{padding:"12px",flex:1,borderRadius:8,border:`0.5px solid ${t.border}`,background:"transparent",color:t.text,fontSize:13,fontWeight:500,cursor:"pointer"}}>⏭ Später</button>
+              <button onClick={async()=>{await requestPersistentStorage();setShowPersistentPrompt(false);}} style={{padding:"12px",flex:1,borderRadius:8,border:"none",background:"#6366f1",color:"white",fontSize:13,fontWeight:500,cursor:"pointer"}}>✅ Erlauben</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{padding:"18px 18px 90px",maxWidth:660,margin:"0 auto"}}>
 
@@ -514,7 +554,6 @@ export default function App(){
                 <div style={C()}>
                   <textarea autoFocus value={inlineNoteText} onChange={e=>setInlineNoteText(e.target.value)} placeholder="Notiz eingeben..." style={{width:"100%",minHeight:72,background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,padding:"9px 12px",color:t.text,fontSize:14,resize:"none",boxSizing:"border-box"}}/>
                   <div style={{display:"flex",gap:8,marginTop:8}}>
-                    <button onClick={()=>setCameraOpen(true)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>📷 Foto</button>
                     <button onClick={()=>{setShowInlineNote(false);setInlineNoteText("");}} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
                     <button onClick={saveInlineNote} disabled={!inlineNoteText.trim()} style={Btn(inlineNoteText.trim()?"#6366f1":"#6366f140","white")}>Speichern</button>
                   </div>
@@ -541,11 +580,8 @@ export default function App(){
             ):[...notes].reverse().map(n=>(
               <div key={n.id} style={C()}>
                 <div style={{fontSize:14,lineHeight:1.6,marginBottom:8}}>{n.text}</div>
-                {n.images&&n.images.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:8}}>
-                  {n.images.map(img=><img key={img.id} src={img.dataUrl} alt="note" style={{width:"100%",borderRadius:6,maxHeight:150,objectFit:"cover"}}/>)}
-                </div>}
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,color:t.hint}}>
-                  <span>{fmtDate(n.ts)} {fmtTime(n.ts)}{n.images&&n.images.length>0&&` · ${n.images.length} Bilder`}</span>
+                  <span>{fmtDate(n.ts)} {fmtTime(n.ts)}</span>
                   <button onClick={()=>setNotes(ns=>ns.filter(x=>x.id!==n.id))} style={{border:"none",background:"none",color:"#ef4444",cursor:"pointer"}}>✕</button>
                 </div>
               </div>
@@ -635,16 +671,6 @@ export default function App(){
               </div>
             ))}
             <button onClick={()=>setRuleManagerOpen(false)} style={{width:"100%",marginTop:16,padding:"10px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,color:t.text,cursor:"pointer"}}>Schließen</button>
-          </div>
-        </div>
-      )}
-
-      {cameraOpen&&(
-        <div style={{position:"fixed",inset:0,background:"#00000090",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:200}}>
-          <video ref={cameraRef} autoPlay style={{width:"100%",maxWidth:500,borderRadius:12,marginBottom:16}}/>
-          <div style={{display:"flex",gap:8}}>
-            <button onClick={()=>setCameraOpen(false)} style={Btn("#ef444414","#ef4444","0.5px solid #ef444440")}>Abbrechen</button>
-            <button onClick={captureImage} style={Btn("#6366f1","white")}>📸 Foto</button>
           </div>
         </div>
       )}
