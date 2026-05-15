@@ -31,6 +31,7 @@ function getPos(){
 function locStr(l){if(!l)return"—";if(typeof l==="string")return l;return`${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`;}
 
 const isPWA=()=>window.matchMedia("(display-mode: standalone)").matches||window.navigator.standalone===true;
+const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
 
 export default function App(){
   const [dark,setDark]=useState(true);
@@ -106,6 +107,7 @@ export default function App(){
   const [deleteAll,setDeleteAll]=useState(false);
   const [appLoading, setAppLoading] = useState(true);
   const [installPrompt,setInstallPrompt]=useState(null);
+  const [iosInstallModal,setIosInstallModal]=useState(false);
 
   useEffect(()=>{
     const init=async()=>{
@@ -502,6 +504,16 @@ export default function App(){
     setDeleteAll(false);
   };
 
+  const handleInstallPwa=async()=>{
+    if(installPrompt){
+      await installPrompt.prompt();
+      const r=await installPrompt.userChoice;
+      if(r.outcome==="accepted")setInstallPrompt(null);
+    }else if(isIOS){
+      setIosInstallModal(true);
+    }
+  };
+
   const ws2=new Date();ws2.setDate(ws2.getDate()-ws2.getDay()+1);ws2.setHours(0,0,0,0);
   const weekMs=workSessions.filter(s=>s.start>=ws2).reduce((s,x)=>s+x.netMs,0);
 
@@ -519,10 +531,10 @@ export default function App(){
       {appLoading&&<div style={{position:"fixed",inset:0,background:"#0f1117",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999,color:"#94a3b8",fontSize:14}}>Laden…</div>}
       <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}@keyframes banana{0%{transform:rotate(-20deg) scale(1.1)}50%{transform:rotate(20deg) scale(1.1)}100%{transform:rotate(-20deg) scale(1.1)}}.banana{animation:banana 0.5s ease-in-out infinite;display:inline-block;font-size:72px;line-height:1}body{margin:0;padding:0}`}</style>
 
-      {!isPWA()&&installPrompt&&(
-        <div style={{background:"#6366f1",color:"white",padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <span style={{fontSize:14,fontWeight:500}}>📱 Zum Homescreen hinzufügen</span>
-          <button onClick={async()=>{await installPrompt.prompt();const r=await installPrompt.userChoice;if(r.outcome==="accepted")setInstallPrompt(null);}} style={{background:"white",color:"#6366f1",border:"none",padding:"10px 20px",borderRadius:8,fontSize:14,fontWeight:600,cursor:"pointer"}}>Installieren</button>
+      {!isPWA()&&(installPrompt||isIOS)&&(
+        <div style={{background:"#6366f1",color:"white",padding:"12px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontSize:13,fontWeight:500}}>📱 Als App installieren</span>
+          <button onClick={handleInstallPwa} style={{background:"white",color:"#6366f1",border:"none",padding:"8px 18px",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer"}}>Installieren</button>
         </div>
       )}
 
@@ -572,7 +584,12 @@ export default function App(){
                 <button onClick={()=>{setTaetigkeitModal(true);setTaetigkeitInput("");}} style={{width:"100%",padding:"16px",background:"#6366f1",border:"none",borderRadius:12,color:"white",fontSize:16,fontWeight:600,cursor:"pointer",marginBottom:12}}>▶ Einstempeln</button>
               </>
             )}
-            <button onClick={()=>setRuleManagerOpen(true)} style={{width:"100%",padding:"14px",background:"transparent",border:`1.5px solid ${t.border}`,borderRadius:12,color:t.muted,fontSize:14,fontWeight:500,cursor:"pointer"}}>⚙ Regel erstellen</button>
+            <button onClick={()=>setRuleManagerOpen(true)} style={{width:"100%",padding:"14px",background:"transparent",border:`1.5px solid ${t.border}`,borderRadius:12,color:t.muted,fontSize:14,fontWeight:500,cursor:"pointer",marginBottom:10}}>⚙ Regel erstellen</button>
+            {!isPWA()&&(installPrompt||isIOS)&&(
+              <button onClick={handleInstallPwa} style={{width:"100%",padding:"14px",background:"transparent",border:`1.5px solid #6366f140`,borderRadius:12,color:"#6366f1",fontSize:14,fontWeight:500,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+                📱 App auf Homescreen installieren
+              </button>
+            )}
           </>
         )}
 
@@ -989,6 +1006,31 @@ export default function App(){
             </div>
             <textarea value={dayComment} onChange={e=>setDayComment(e.target.value)} placeholder="Bemerkungen (optional)..." style={{width:"100%",minHeight:72,background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:9,padding:"10px",color:t.text,resize:"none",boxSizing:"border-box",marginBottom:12}}/>
             <button onClick={()=>finalizeStop(dayStars,dayComment.trim())} style={{width:"100%",padding:"12px",background:"#6366f1",border:"none",borderRadius:9,color:"white",fontWeight:500,cursor:"pointer"}}>Abschliessen</button>
+          </div>
+        </div>
+      )}
+
+      {iosInstallModal&&(
+        <div style={{position:"fixed",inset:0,background:"#00000080",display:"flex",alignItems:"flex-end",zIndex:300}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"18px 18px 0 0",padding:"24px 20px 36px",maxWidth:660,margin:"0 auto",boxSizing:"border-box"}}>
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{fontSize:36,marginBottom:8}}>📱</div>
+              <div style={{fontWeight:600,fontSize:17}}>App installieren</div>
+              <div style={{fontSize:13,color:t.hint,marginTop:4}}>Füge ZeitTracker zum Home-Bildschirm hinzu</div>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:16,marginBottom:28}}>
+              {[
+                {n:1,icon:"⎋",text:<>Tippe auf das <strong>Teilen-Symbol</strong> (⎋ unten in der Safari-Leiste)</>},
+                {n:2,icon:"➕",text:<>Scrolle und wähle <strong>„Zum Home-Bildschirm"</strong></>},
+                {n:3,icon:"✓",text:<>Tippe oben rechts auf <strong>„Hinzufügen"</strong></>},
+              ].map(({n,icon,text})=>(
+                <div key={n} style={{display:"flex",gap:14,alignItems:"center"}}>
+                  <div style={{width:36,height:36,background:"#6366f114",border:"1px solid #6366f130",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:"#6366f1",flexShrink:0}}>{n}</div>
+                  <div style={{fontSize:14,lineHeight:1.55,color:t.text}}>{text}</div>
+                </div>
+              ))}
+            </div>
+            <button onClick={()=>setIosInstallModal(false)} style={{width:"100%",padding:"14px",background:"#6366f1",border:"none",borderRadius:12,color:"white",fontSize:15,fontWeight:600,cursor:"pointer"}}>Verstanden ✓</button>
           </div>
         </div>
       )}
