@@ -93,6 +93,7 @@ export default function App(){
   const tickRef=useRef(null);
   const gpsRef=useRef(null);
   const ruleCheckRef=useRef(null);
+  const activeRef=useRef(false);
 
   const [exportModal,setExportModal]=useState(false);
   const [exportFromDate,setExportFromDate]=useState("");
@@ -197,10 +198,25 @@ export default function App(){
 
   useEffect(()=>{
     const active=(work&&!work.paused)||(drive&&!drive.paused)||extraTrackers.some(et=>!et.paused);
+    activeRef.current=active;
     if(active){tickRef.current=setInterval(()=>setNow(Date.now()),1000);}
     else{clearInterval(tickRef.current);}
     return()=>clearInterval(tickRef.current);
   },[!!work,work?.paused,!!drive,drive?.paused,extraTrackers]);
+
+  // Wenn App aus Hintergrund zurückkommt: now sofort aktualisieren + Interval neu starten
+  useEffect(()=>{
+    const onVisible=()=>{
+      if(document.visibilityState!=="visible") return;
+      setNow(Date.now());
+      if(activeRef.current){
+        clearInterval(tickRef.current);
+        tickRef.current=setInterval(()=>setNow(Date.now()),1000);
+      }
+    };
+    document.addEventListener("visibilitychange",onVisible);
+    return()=>document.removeEventListener("visibilitychange",onVisible);
+  },[]);
 
   const logGps=useCallback(async()=>{
     try{
