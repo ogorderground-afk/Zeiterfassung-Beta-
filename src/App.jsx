@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { checkStorageAndWarn, logPageLoad, logCSVExport, rateLimiter } from "./utils/rateLimiter";
+import { db, getSetting, setSetting } from "./db";
+import { migrateFromLocalStorage } from "./utils/migration";
 
 const ARV_WORK  = [{h:5.5,label:"15 Min. Pause"},{h:7,label:"30 Min. Pause"},{h:9,label:"1 Std. Pause"}];
 const ARV_DRIVE = [{h:4.5,label:"45 Min. Pflichtpause (ARV 1)"},{h:9,label:"Tageslimit Lenkzeit"}];
@@ -10,6 +12,8 @@ function fmtTime(ts){return new Date(ts).toLocaleTimeString("de-CH",{hour:"2-dig
 function fmtDate(ts){return new Date(ts).toLocaleDateString("de-CH");}
 function fmtFull(ts){return new Date(ts).toLocaleString("de-CH",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});}
 function toH(ms){return ms/3600000;}
+function toDatetimeLocal(ts){const d=new Date(ts);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16);}
+const EXTRA_COLORS=["#8b5cf6","#ec4899","#14b8a6","#f59e0b","#84cc16"];
 function calcNet(s,now){if(!s)return 0;const pm=s.pauses.reduce((a,p)=>a+((p.end||now)-p.start),0);return Math.max(0,(s.end||now)-s.start-pm);}
 function calcPMs(s,now){if(!s)return 0;return s.pauses.reduce((a,p)=>a+((p.end||now)-p.start),0);}
 
@@ -26,22 +30,12 @@ function getPos(){
 
 function locStr(l){if(!l)return"—";if(typeof l==="string")return l;return`${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`;}
 
-const saveToStorage=(key,data)=>{
-  try{localStorage.setItem(key,JSON.stringify(data));}
-  catch(e){if(e.name==="QuotaExceededError"){rateLimiter.autoCleanupOldSessions();localStorage.setItem(key,JSON.stringify(data));}else{console.error("localStorage Fehler:",e);}}
-};
-
-const loadFromStorage=(key,def=null)=>{
-  try{const v=localStorage.getItem(key);return v?JSON.parse(v):def;}
-  catch(e){console.error("localStorage Parse-Fehler bei",key,e);return def;}
-};
-
 const isPWA=()=>window.matchMedia("(display-mode: standalone)").matches||window.navigator.standalone===true;
+const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
 
 export default function App(){
   const [dark,setDark]=useState(true);
-  const [transparent,setTransparent]=useState(false);
-  const [view,setView]=useState("tracker");
+  const [view,setView]=useState("home");
   const [storageWarning,setStorageWarning]=useState(null);
   const [gpsInterval,setGpsInterval]=useState(10);
   const [drivepauseModal,setDrivepauseModal]=useState(false);
@@ -63,7 +57,10 @@ export default function App(){
   const [rules,setRules]=useState([]);
   const [newRuleHours,setNewRuleHours]=useState(1);
   const [newRuleMinutes,setNewRuleMinutes]=useState(0);
+  const [newRuleName,setNewRuleName]=useState("");
   const [newRuleText,setNewRuleText]=useState("");
+  const [exportChoiceModal,setExportChoiceModal]=useState(false);
+  const [pendingCsv,setPendingCsv]=useState(null);
 
   const [confirmStop,setConfirmStop]=useState(false);
   const [ratingModal,setRatingModal]=useState(false);
@@ -75,8 +72,18 @@ export default function App(){
   const [editNoteText,setEditNoteText]=useState("");
   const [showInlineNote,setShowInlineNote]=useState(false);
   const [inlineNoteText,setInlineNoteText]=useState("");
-  const [cameraOpen,setCameraOpen]=useState(false);
-  const cameraRef=useRef(null);
+
+  const [editSession,setEditSession]=useState(null);
+  const [editStart,setEditStart]=useState("");
+  const [editEnd,setEditEnd]=useState("");
+  const [editTaetigkeit,setEditTaetigkeit]=useState("");
+  const [editStars,setEditStars]=useState(0);
+
+  const [extraTrackers,setExtraTrackers]=useState([]);
+  const [customSessions,setCustomSessions]=useState([]);
+  const [extraTrackerModal,setExtraTrackerModal]=useState(false);
+  const [extraTrackerInput,setExtraTrackerInput]=useState("");
+  const [extraTrackerRule,setExtraTrackerRule]=useState("standard");
 
   const [actionLog,setActionLog]=useState([]);
   const [curLoc,setCurLoc]=useState(null);
@@ -87,6 +94,7 @@ export default function App(){
   const tickRef=useRef(null);
   const gpsRef=useRef(null);
   const ruleCheckRef=useRef(null);
+  const activeRef=useRef(false);
 
   const [exportModal,setExportModal]=useState(false);
   const [exportFromDate,setExportFromDate]=useState("");
@@ -97,85 +105,129 @@ export default function App(){
   const [deleteFromDate,setDeleteFromDate]=useState("");
   const [deleteToDate,setDeleteToDate]=useState("");
   const [deleteAll,setDeleteAll]=useState(false);
+  const [appLoading, setAppLoading] = useState(true);
+  const [installPrompt,setInstallPrompt]=useState(null);
+  const [iosInstallModal,setIosInstallModal]=useState(false);
 
   useEffect(()=>{
-    const limitCheck=logPageLoad();
-    if(limitCheck.blocked){setStorageWarning("❌ Zu viele Anfragen.");return;}
-    const quota=checkStorageAndWarn();
-    if(quota.warning){setStorageWarning(quota.warning);}
+    const init=async()=>{
+      await migrateFromLocalStorage();
 
-    const w=loadFromStorage("work");
-    const d=loadFromStorage("drive");
-    const ws=loadFromStorage("workSessions",[]);
-    const ds=loadFromStorage("driveSessions",[]);
-    const n=loadFromStorage("notes",[]);
-    const al=loadFromStorage("actionLog",[]);
-    const gl=loadFromStorage("gpsLog",[]);
-    const gi=loadFromStorage("gpsInterval",10);
-    const r=loadFromStorage("rules",[]);
-    const ne=loadFromStorage("notificationEnabled",true);
-    const de=loadFromStorage("driveExpanded",false);
-    const tr=loadFromStorage("triggeredRules",[]);
+      const quota=await checkStorageAndWarn();
+      if(quota.warning){setStorageWarning(quota.warning);}
 
-    if(w){w._lastSave=Date.now();setWork(w);}
-    if(d){d._lastSave=Date.now();setDrive(d);}
-    setWorkSessions(ws);
-    setDriveSessions(ds);
-    setNotes(n);
-    setActionLog(al);
-    setGpsLog(gl);
-    setGpsInterval(gi);
-    setRules(r);
-    setNotificationEnabled(ne);
-    setDriveExpanded(de);
-    setTriggeredRules(tr);
-    setNow(Date.now());
+      const [ws,ds,n,gi,r,ne,de,tr,w,d,et,cs]=await Promise.all([
+        db.workSessions.toArray(),
+        db.driveSessions.toArray(),
+        db.notes.orderBy('ts').toArray(),
+        getSetting('gpsInterval',10),
+        getSetting('rules',[]),
+        getSetting('notificationEnabled',false),
+        getSetting('driveExpanded',false),
+        getSetting('triggeredRules',[]),
+        getSetting('work',null),
+        getSetting('drive',null),
+        getSetting('extraTrackers',[]),
+        getSetting('customSessions',[]),
+      ]);
+      const [al,gl]=await Promise.all([
+        db.actionLog.orderBy('ts').toArray().then(items=>items.map(({id,...rest})=>rest)),
+        db.gpsLog.orderBy('ts').toArray().then(items=>items.map(({id,...rest})=>rest)),
+      ]);
 
-    if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(err=>console.log("SW registration failed:",err));}
+      if(w){setWork(w);}
+      if(d){setDrive(d);}
+      setWorkSessions(ws);
+      setDriveSessions(ds);
+      setNotes(n);
+      setActionLog(al);
+      setGpsLog(gl);
+      setGpsInterval(gi);
+      setRules(r);
+      setNotificationEnabled(ne);
+      setDriveExpanded(de);
+      setTriggeredRules(tr);
+      setExtraTrackers(et);
+      setCustomSessions(cs);
+      setNow(Date.now());
+      setAppLoading(false);
+    };
+    init();
+
+    const onBeforeInstall=(e)=>{e.preventDefault();setInstallPrompt(e);};
+    window.addEventListener("beforeinstallprompt",onBeforeInstall);
+    window.addEventListener("appinstalled",()=>setInstallPrompt(null));
+    return()=>window.removeEventListener("beforeinstallprompt",onBeforeInstall);
   },[]);
 
-  useEffect(()=>{if(work){const toSave={...work,_lastSave:Date.now()};saveToStorage("work",toSave);}else{localStorage.removeItem("work");}}, [work]);
-  useEffect(()=>{if(drive){const toSave={...drive,_lastSave:Date.now()};saveToStorage("drive",toSave);}else{localStorage.removeItem("drive");}}, [drive]);
-  useEffect(()=>saveToStorage("workSessions",workSessions),[workSessions]);
-  useEffect(()=>saveToStorage("driveSessions",driveSessions),[driveSessions]);
-  useEffect(()=>saveToStorage("notes",notes),[notes]);
-  useEffect(()=>saveToStorage("actionLog",actionLog),[actionLog]);
-  useEffect(()=>saveToStorage("gpsLog",gpsLog),[gpsLog]);
-  useEffect(()=>saveToStorage("gpsInterval",gpsInterval),[gpsInterval]);
-  useEffect(()=>saveToStorage("rules",rules),[rules]);
-  useEffect(()=>saveToStorage("notificationEnabled",notificationEnabled),[notificationEnabled]);
-  useEffect(()=>saveToStorage("driveExpanded",driveExpanded),[driveExpanded]);
-  useEffect(()=>saveToStorage("triggeredRules",triggeredRules),[triggeredRules]);
+  useEffect(()=>{if(work){setSetting('work',{...work,_lastSave:Date.now()});}else{db.settings.delete('work');}},[work]);
+  useEffect(()=>{if(drive){setSetting('drive',{...drive,_lastSave:Date.now()});}else{db.settings.delete('drive');}},[drive]);
+  useEffect(()=>{setSetting('gpsInterval',gpsInterval);},[gpsInterval]);
+  useEffect(()=>{setSetting('rules',rules);},[rules]);
+  useEffect(()=>{setSetting('notificationEnabled',notificationEnabled);},[notificationEnabled]);
+  useEffect(()=>{setSetting('driveExpanded',driveExpanded);},[driveExpanded]);
+  useEffect(()=>{setSetting('triggeredRules',triggeredRules);},[triggeredRules]);
+  useEffect(()=>{setSetting('extraTrackers',extraTrackers);},[extraTrackers]);
+  useEffect(()=>{setSetting('customSessions',customSessions);},[customSessions]);
 
   const logA=useCallback((action,detail="",loc=null)=>{
-    setActionLog(p=>[...p,{ts:Date.now(),action,detail,loc}]);
+    const entry={ts:Date.now(),action,detail,loc};
+    db.actionLog.add(entry);
+    setActionLog(p=>[...p,entry]);
   },[]);
 
-  const sendNotification=(title,options={})=>{
-    if(!notificationEnabled||!("Notification" in window)) return;
-    if(Notification.permission==="granted"){
-      new Notification(title,options);
-    }else if(Notification.permission!=="denied"){
-      Notification.requestPermission().then(permission=>{
-        if(permission==="granted"){
-          new Notification(title,options);
-        }
-      });
+  const sendNotification=async(title,body="")=>{
+    if(!notificationEnabled||!("Notification" in window)||Notification.permission!=="granted") return;
+    // Service Worker showNotification funktioniert auch wenn App im Hintergrund
+    if("serviceWorker" in navigator){
+      try{
+        const reg=await navigator.serviceWorker.ready;
+        await reg.showNotification(title,{body,icon:"/manifest.json",badge:"/manifest.json"});
+        return;
+      }catch{}
     }
+    new Notification(title,{body});
   };
 
+  const toggleNotifications=async()=>{
+    if(notificationEnabled){setNotificationEnabled(false);return;}
+    if(!("Notification" in window)) return;
+    if(Notification.permission==="granted"){setNotificationEnabled(true);return;}
+    if(Notification.permission==="denied"){alert("Benachrichtigungen sind im Browser blockiert. Bitte in den Einstellungen freigeben.");return;}
+    const perm=await Notification.requestPermission();
+    if(perm==="granted"){setNotificationEnabled(true);new Notification("ZeitTracker",{body:"Benachrichtigungen aktiviert ✓"});}
+  };
+
+  const hasActiveExtra=extraTrackers.some(et=>!et.paused);
+  const isAnyActive=(!!work&&!work.paused)||(!!drive&&!drive.paused)||hasActiveExtra;
+
   useEffect(()=>{
-    const active=(work&&!work.paused)||(drive&&!drive.paused);
-    if(active){tickRef.current=setInterval(()=>setNow(Date.now()),1000);}
+    activeRef.current=isAnyActive;
+    if(isAnyActive){tickRef.current=setInterval(()=>setNow(Date.now()),1000);}
     else{clearInterval(tickRef.current);}
     return()=>clearInterval(tickRef.current);
-  },[!!work,work?.paused,!!drive,drive?.paused]);
+  },[isAnyActive]);
+
+  // Wenn App aus Hintergrund zurückkommt: now sofort aktualisieren + Interval neu starten
+  useEffect(()=>{
+    const onVisible=()=>{
+      if(document.visibilityState!=="visible") return;
+      setNow(Date.now());
+      if(activeRef.current){
+        clearInterval(tickRef.current);
+        tickRef.current=setInterval(()=>setNow(Date.now()),1000);
+      }
+    };
+    document.addEventListener("visibilitychange",onVisible);
+    return()=>document.removeEventListener("visibilitychange",onVisible);
+  },[]);
 
   const logGps=useCallback(async()=>{
     try{
       const p=await getPos();
       setCurLoc(p);
       const gpsEntry={ts:Date.now(),...p,context:{session_type:drive?"Fahrt":"Arbeit",session_start:drive?.start||work?.start,activity:work?.taetigkeit||"",rule_applied:selectedRule}};
+      db.gpsLog.add(gpsEntry);
       setGpsLog(g=>[...g,gpsEntry]);
       logA("GPS",locStr(p),p);
     }catch(err){console.log("GPS-Fehler:",err.message);}
@@ -224,7 +276,7 @@ export default function App(){
     setWork({start:Date.now(),pauses:[],paused:false,taetigkeit:ta,ruleType:selectedRule});
     setNow(Date.now());setShowWorkDot(true);
     logA("EINSTEMPELN",ta,curLoc);
-    setTaetigkeitModal(false);setTaetigkeitInput("");
+    setTaetigkeitModal(false);setTaetigkeitInput("");setView("tracker");
   };
 
   const handleWorkPause=()=>{
@@ -237,18 +289,29 @@ export default function App(){
   };
 
   const handleDrivePause=()=>{
-    setDrivepauseModal(true);
-  };
-
-  const confirmDrivePause=(pauseWork)=>{
-    const ts=Date.now();
-    if(!drive.paused){
-      logA("PAUSE_START","Lenkzeit",curLoc);
-      setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}]}));
-    }else{
+    if(drive.paused){
+      // Resuming: no modal needed
+      const ts=Date.now();
       logA("PAUSE_ENDE","Lenkzeit",curLoc);
       setDrive(d=>({...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)}));
+    }else{
+      // Pausing: ask if work should pause too
+      setDrivepauseModal(true);
     }
+  };
+
+  const confirmDrivePause=()=>{
+    const ts=Date.now();
+    logA("PAUSE_START","Lenkzeit",curLoc);
+    setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}]}));
+    setDrivepauseModal(false);
+  };
+
+  const confirmDrivePauseBoth=()=>{
+    const ts=Date.now();
+    logA("PAUSE_START","Lenkzeit+Arbeit",curLoc);
+    setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}]}));
+    setWork(w=>({...w,paused:true,pauses:[...w.pauses,{start:ts}]}));
     setDrivepauseModal(false);
   };
 
@@ -258,7 +321,9 @@ export default function App(){
       d={...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)};
     }
     const net=calcNet({...d,end:ts},ts),pm=calcPMs({...d,end:ts},ts);
-    setDriveSessions(p=>[...p,{...d,end:ts,netMs:net,pauseMs:pm,location:curLoc}]);
+    const newDriveSession={...d,end:ts,netMs:net,pauseMs:pm,location:curLoc};
+    db.driveSessions.put(newDriveSession);
+    setDriveSessions(p=>[...p,newDriveSession]);
     logA("FAHRT_ENDE",`${toH(net).toFixed(2)}h`,curLoc);
     setDrive(null);setShowDriveDot(true);
   };
@@ -268,52 +333,102 @@ export default function App(){
     if(drive){
       let d=drive;
       if(d.paused)d={...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)};
-      setDriveSessions(p=>[...p,{...d,end:ts,netMs:calcNet({...d,end:ts},ts),pauseMs:calcPMs({...d,end:ts},ts),location:curLoc}]);
+      const finDrive={...d,end:ts,netMs:calcNet({...d,end:ts},ts),pauseMs:calcPMs({...d,end:ts},ts),location:curLoc};
+      db.driveSessions.put(finDrive);
+      setDriveSessions(p=>[...p,finDrive]);
       setDrive(null);setShowDriveDot(true);
     }
     let w=work;
     if(w.paused)w={...w,paused:false,pauses:w.pauses.map((p,i)=>i===w.pauses.length-1?{...p,end:ts}:p)};
-    setWorkSessions(p=>[...p,{...w,end:ts,netMs:calcNet({...w,end:ts},ts),pauseMs:calcPMs({...w,end:ts},ts),location:curLoc,stars,comment}]);
+    const finWork={...w,end:ts,netMs:calcNet({...w,end:ts},ts),pauseMs:calcPMs({...w,end:ts},ts),location:curLoc,stars,comment};
+    db.workSessions.put(finWork);
+    setWorkSessions(p=>[...p,finWork]);
     logA("AUSSTEMPELN",`★${stars}${comment?" | "+comment:""}`,curLoc);
     setWork(null);setShowWorkDot(true);
     setTriggeredRules([]);
     setShowInlineNote(false);setInlineNoteText("");
-    if(view==="notizen")setView("tracker");
+    setView("home");
     setRatingModal(false);setDayStars(0);setDayComment("");
   };
 
   const saveInlineNote=()=>{
     if(!inlineNoteText.trim())return;
-    setNotes(n=>[...n,{id:Date.now(),text:inlineNoteText.trim(),ts:Date.now(),loc:curLoc,images:[]}]);
+    const note={id:Date.now(),text:inlineNoteText.trim(),ts:Date.now(),loc:curLoc,images:[]};
+    db.notes.put(note);
+    setNotes(n=>[...n,note]);
     logA("NOTIZ",inlineNoteText.trim().slice(0,60),curLoc);
     setInlineNoteText("");setShowInlineNote(false);
   };
 
-  const addImageToNote=(noteId,imageData)=>{
-    setNotes(n=>n.map(note=>note.id===noteId?{...note,images:[...(note.images||[]),{id:Date.now(),dataUrl:imageData,ts:Date.now(),size:imageData.length}]}:note));
+  const openEditSession=(session,type)=>{
+    setEditSession({data:session,type});
+    setEditStart(toDatetimeLocal(session.start));
+    setEditEnd(toDatetimeLocal(session.end));
+    setEditTaetigkeit(session.taetigkeit||"");
+    setEditStars(session.stars||0);
   };
 
-  const captureImage=()=>{
-    if(!cameraRef.current) return;
-    const canvas=document.createElement("canvas");
-    canvas.width=cameraRef.current.videoWidth;
-    canvas.height=cameraRef.current.videoHeight;
-    const ctx=canvas.getContext("2d");
-    ctx.drawImage(cameraRef.current,0,0);
-    const imageData=canvas.toDataURL("image/jpeg",0.8);
-    if(notes.length>0){
-      addImageToNote(notes[notes.length-1].id,imageData);
+  const saveEditedSession=()=>{
+    if(!editSession) return;
+    const {data,type}=editSession;
+    const newStart=new Date(editStart).getTime();
+    const newEnd=new Date(editEnd).getTime();
+    const newNetMs=Math.max(0,newEnd-newStart-(data.pauseMs||0));
+    if(type==="Arbeit"){
+      const updated={...data,start:newStart,end:newEnd,netMs:newNetMs,taetigkeit:editTaetigkeit,stars:editStars};
+      db.workSessions.delete(data.start);
+      db.workSessions.put(updated);
+      setWorkSessions(ws=>ws.map(s=>s.start===data.start?updated:s));
+    }else{
+      const updated={...data,start:newStart,end:newEnd,netMs:newNetMs};
+      db.driveSessions.delete(data.start);
+      db.driveSessions.put(updated);
+      setDriveSessions(ds=>ds.map(s=>s.start===data.start?updated:s));
     }
-    setCameraOpen(false);
+    setEditSession(null);
+  };
+
+  const startExtraTracker=()=>{
+    if(!extraTrackerInput.trim()) return;
+    const colorIdx=extraTrackers.length%EXTRA_COLORS.length;
+    const et={id:Date.now(),label:extraTrackerInput.trim(),start:Date.now(),pauses:[],paused:false,rule:extraTrackerRule,color:EXTRA_COLORS[colorIdx]};
+    setExtraTrackers(p=>[...p,et]);
+    logA("EXTRA_START",et.label,curLoc);
+    setExtraTrackerModal(false);setExtraTrackerInput("");setExtraTrackerRule("standard");
+  };
+
+  const pauseExtraTracker=(id)=>{
+    const ts=Date.now();
+    setExtraTrackers(ets=>ets.map(et=>{
+      if(et.id!==id) return et;
+      if(et.paused) return{...et,paused:false,pauses:et.pauses.map((p,i)=>i===et.pauses.length-1?{...p,end:ts}:p)};
+      return{...et,paused:true,pauses:[...et.pauses,{start:ts}]};
+    }));
+  };
+
+  const stopExtraTracker=(id)=>{
+    const ts=Date.now();
+    const et=extraTrackers.find(e=>e.id===id);
+    if(!et) return;
+    let finished={...et};
+    if(finished.paused) finished={...finished,paused:false,pauses:finished.pauses.map((p,i)=>i===finished.pauses.length-1?{...p,end:ts}:p)};
+    const netMs=calcNet({...finished,end:ts},ts);
+    const session={...finished,end:ts,netMs,pauseMs:calcPMs({...finished,end:ts},ts)};
+    setCustomSessions(p=>[...p,session]);
+    setExtraTrackers(ets=>ets.filter(e=>e.id!==id));
+    logA("EXTRA_STOP",`${et.label} ${toH(netMs).toFixed(2)}h`,curLoc);
   };
 
   const createRule=()=>{
     if(!newRuleText.trim()) return;
-    const newRule={id:Date.now(),text:newRuleText,hours:newRuleHours,minutes:newRuleMinutes};
+    const newRule={id:Date.now(),name:newRuleName.trim()||newRuleText.trim(),text:newRuleText,hours:newRuleHours,minutes:newRuleMinutes};
     setRules(r=>[...r,newRule]);
-    setNewRuleText("");
-    setNewRuleHours(1);
-    setNewRuleMinutes(0);
+    setNewRuleName("");setNewRuleText("");setNewRuleHours(1);setNewRuleMinutes(0);
+    setRuleManagerOpen(false);
+  };
+
+  const toggleCollapseTracker=(id)=>{
+    setExtraTrackers(ets=>ets.map(et=>et.id===id?{...et,collapsed:!et.collapsed}:et));
   };
 
   const deleteRule=(ruleId)=>{
@@ -321,43 +436,52 @@ export default function App(){
     if(selectedRule===ruleId) setSelectedRule("standard");
   };
 
-  const exportCSV=(fromStr,toStr)=>{
-    const exportLimit=logCSVExport();
-    if(exportLimit.blocked){alert("Zu viele CSV-Exporte!");return;}
-
+  const buildCsvContent=(fromStr,toStr)=>{
     const from=fromStr?new Date(fromStr).getTime():0;
     const to=toStr?new Date(toStr).getTime()+86400000:Date.now();
-
     const filteredWorks=workSessions.filter(s=>s.start>=from&&s.start<to);
     const filteredDrives=driveSessions.filter(s=>s.start>=from&&s.start<to);
     const filteredNotes=notes.filter(n=>n.ts>=from&&n.ts<to&&(!n.images||n.images.length===0));
     const filteredGps=gpsLog.filter(g=>g.ts>=from&&g.ts<to);
-
     const hdr="type,datum,start_time,end_time,netto_hours,pause_minutes,activity,rating,location_lat,location_lng,location_accuracy,gps_count,comment,rule_type,altitude,speed";
-    
     const rows=[
-      ...filteredWorks.map(s=>{
-        const locData=s.location?`"${s.location.lat}","${s.location.lng}","${s.location.acc}"`:'"","",""';
-        const gpsForSession=filteredGps.filter(g=>g.ts>=s.start&&g.ts<=(s.end||now)).length;
-        return `"Arbeit","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${Math.round(s.pauseMs/60000)}","${s.taetigkeit||""}","${s.stars||0}",${locData},"${gpsForSession}","${s.comment||""}","${s.ruleType||"standard"}","",""`;
+      ...filteredWorks.map(s=>{const locData=s.location?`"${s.location.lat}","${s.location.lng}","${s.location.acc}"`:'"","",""';const gpsN=filteredGps.filter(g=>g.ts>=s.start&&g.ts<=(s.end||now)).length;return `"Arbeit","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${Math.round(s.pauseMs/60000)}","${s.taetigkeit||""}","${s.stars||0}",${locData},"${gpsN}","${s.comment||""}","${s.ruleType||"standard"}","",""`;
       }),
-      ...filteredDrives.map(s=>{
-        const locData=s.location?`"${s.location.lat}","${s.location.lng}","${s.location.acc}"`:'"","",""';
-        const gpsForSession=filteredGps.filter(g=>g.ts>=s.start&&g.ts<=(s.end||now)).length;
-        return `"Fahrt","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${Math.round(s.pauseMs/60000)}","","","",${locData},"${gpsForSession}",""`;
+      ...filteredDrives.map(s=>{const locData=s.location?`"${s.location.lat}","${s.location.lng}","${s.location.acc}"`:'"","",""';const gpsN=filteredGps.filter(g=>g.ts>=s.start&&g.ts<=(s.end||now)).length;return `"Fahrt","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${Math.round(s.pauseMs/60000)}","","","",${locData},"${gpsN}",""`;
       }),
-      ...filteredNotes.map(n=>{
-        const locData=n.loc?`"${n.loc.lat}","${n.loc.lng}","${n.loc.acc}"`:'"","",""';
-        return `"Notiz","${fmtDate(n.ts)}","${fmtTime(n.ts)}","","","","${n.text.replace(/"/g,'""')}","",${locData},"0",""`;
+      ...filteredNotes.map(n=>{const locData=n.loc?`"${n.loc.lat}","${n.loc.lng}","${n.loc.acc}"`:'"","",""';return `"Notiz","${fmtDate(n.ts)}","${fmtTime(n.ts)}","","","","${n.text.replace(/"/g,'""')}","",${locData},"0",""`;
       }),
       ...filteredGps.map(g=>`"GPS","${fmtDate(g.ts)}","${fmtTime(g.ts)}","","","","","","${g.lat}","${g.lng}","${g.acc}","1","","${g.context?.rule_applied||""}","${g.altitude||""}","${g.speed||""}"`)
     ];
+    return{content:[hdr,...rows].join("\n"),filename:`zeiterfassung_${fromStr||"alle"}_bis_${toStr||"heute"}.csv`};
+  };
 
-    const blob=new Blob([[hdr,...rows].join("\n")],{type:"text/csv;charset=utf-8;"});
-    Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:`zeiterfassung_${fromStr||"alle"}_bis_${toStr||"heute"}.csv`}).click();
+  const openExportChoice=(fromStr,toStr)=>{
+    const exportLimit=logCSVExport();
+    if(exportLimit.blocked){alert("Zu viele CSV-Exporte!");return;}
+    const csv=buildCsvContent(fromStr,toStr);
+    setPendingCsv(csv);
     setExportModal(false);
-    setExportFromDate("");
-    setExportToDate("");
+    setExportChoiceModal(true);
+  };
+
+  const downloadCsv=()=>{
+    if(!pendingCsv) return;
+    const blob=new Blob([pendingCsv.content],{type:"text/csv;charset=utf-8;"});
+    Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:pendingCsv.filename}).click();
+    setExportChoiceModal(false);setPendingCsv(null);setExportFromDate("");setExportToDate("");
+  };
+
+  const shareViaMail=async()=>{
+    if(!pendingCsv) return;
+    const file=new File([pendingCsv.content],pendingCsv.filename,{type:"text/csv"});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      try{await navigator.share({title:"Zeiterfassung Export",files:[file]});setExportChoiceModal(false);setPendingCsv(null);setExportFromDate("");setExportToDate("");return;}
+      catch(e){if(e.name==="AbortError") return;}
+    }
+    // Fallback: mailto ohne Anhang (Browser-Einschränkung)
+    window.location.href=`mailto:?subject=Zeiterfassung%20Export&body=Anhang%3A%20${encodeURIComponent(pendingCsv.filename)}%0A%0ABitte%20Datei%20manuell%20aus%20dem%20Download-Ordner%20anh%C3%A4ngen.`;
+    downloadCsv();
   };
 
   const deleteData=(fromStr,toStr)=>{
@@ -367,6 +491,11 @@ export default function App(){
     setDriveSessions(ds=>ds.filter(s=>!(s.start>=from&&s.start<to)));
     setNotes(ns=>ns.filter(n=>!(n.ts>=from&&n.ts<to)));
     setActionLog(al=>al.filter(a=>!(a.ts>=from&&a.ts<to)));
+    db.workSessions.where('start').between(from,to,true,false).delete();
+    db.driveSessions.where('start').between(from,to,true,false).delete();
+    db.notes.where('ts').between(from,to,true,false).delete();
+    db.actionLog.where('ts').between(from,to,true,false).delete();
+    db.gpsLog.where('ts').between(from,to,true,false).delete();
     logA("DATEN_GELÖSCHT",`${fromStr||"Anfang"} bis ${toStr||"Heute"}`,null);
     setDeleteModal(false);
     setDeleteConfirm(false);
@@ -375,19 +504,22 @@ export default function App(){
     setDeleteAll(false);
   };
 
+  const handleInstallPwa=async()=>{
+    if(installPrompt){
+      await installPrompt.prompt();
+      const r=await installPrompt.userChoice;
+      if(r.outcome==="accepted")setInstallPrompt(null);
+    }else if(isIOS){
+      setIosInstallModal(true);
+    }
+  };
+
   const ws2=new Date();ws2.setDate(ws2.getDate()-ws2.getDay()+1);ws2.setHours(0,0,0,0);
   const weekMs=workSessions.filter(s=>s.start>=ws2).reduce((s,x)=>s+x.netMs,0);
 
   const getThemeColors=()=>{
-    if(transparent&&dark){
-      return{bg:"rgba(15,17,23,0.7)",card:"rgba(26,29,39,0.5)",s2:"rgba(35,38,58,0.4)",border:"rgba(45,49,72,0.3)",text:"#e2e8f0",muted:"#94a3b8",hint:"#475569",backdrop:"blur(10px)"};
-    }else if(transparent){
-      return{bg:"rgba(244,245,247,0.7)",card:"rgba(255,255,255,0.6)",s2:"rgba(241,242,246,0.5)",border:"rgba(226,228,237,0.4)",text:"#0f172a",muted:"#475569",hint:"#94a3b8",backdrop:"blur(10px)"};
-    }else if(dark){
-      return{bg:"#0f1117",card:"#1a1d27",s2:"#23263a",border:"#2d314840",text:"#e2e8f0",muted:"#94a3b8",hint:"#475569",backdrop:""};
-    }else{
-      return{bg:"#f4f5f7",card:"#ffffff",s2:"#f1f2f6",border:"#e2e4ed",text:"#0f172a",muted:"#475569",hint:"#94a3b8",backdrop:""};
-    }
+    if(dark) return{bg:"#0f1117",card:"#1a1d27",s2:"#23263a",border:"#2d314840",text:"#e2e8f0",muted:"#94a3b8",hint:"#475569",backdrop:""};
+    return{bg:"#f4f5f7",card:"#ffffff",s2:"#f1f2f6",border:"#e2e4ed",text:"#0f172a",muted:"#475569",hint:"#94a3b8",backdrop:""};
   };
 
   const t=getThemeColors();
@@ -396,12 +528,13 @@ export default function App(){
 
   return(
     <div style={{fontFamily:"system-ui,-apple-system,sans-serif",background:t.bg,minHeight:"100vh",color:t.text}}>
-      <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}body{margin:0;padding:0}`}</style>
+      {appLoading&&<div style={{position:"fixed",inset:0,background:"#0f1117",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999,color:"#94a3b8",fontSize:14}}>Laden…</div>}
+      <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}@keyframes banana{0%{transform:rotate(-20deg) scale(1.1)}50%{transform:rotate(20deg) scale(1.1)}100%{transform:rotate(-20deg) scale(1.1)}}.banana{animation:banana 0.5s ease-in-out infinite;display:inline-block;font-size:72px;line-height:1}body{margin:0;padding:0}`}</style>
 
-      {!isPWA()&&(
-        <div style={{background:"#6366f1",color:"white",padding:"12px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12}}>
-          <span>📱 Als App installieren</span>
-          <button onClick={()=>{const a=document.createElement("a");a.href=window.location.href;a.download="ZeitTracker.html";a.click();}} style={{background:"white",color:"#6366f1",border:"none",padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:500,cursor:"pointer"}}>⬇ Download</button>
+      {!isPWA()&&(installPrompt||isIOS)&&(
+        <div style={{background:"#6366f1",color:"white",padding:"12px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontSize:13,fontWeight:500}}>📱 Als App installieren</span>
+          <button onClick={handleInstallPwa} style={{background:"white",color:"#6366f1",border:"none",padding:"8px 18px",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer"}}>Installieren</button>
         </div>
       )}
 
@@ -417,7 +550,7 @@ export default function App(){
               <button onClick={()=>setRuleManagerOpen(true)} style={{padding:"5px 11px",borderRadius:8,border:`0.5px solid ${t.border}`,background:"transparent",color:t.muted,fontSize:11,fontWeight:500,cursor:"pointer"}}>⚙ Regel</button>
             </>
           )}
-          {[["tracker","Tracker"],["notizen","Notizen"],["dashboard","Dashboard"]].map(([v,l])=>(
+          {[["home","Home"],["tracker","Tracker"],["dashboard","Dashboard"]].map(([v,l])=>(
             <button key={v} onClick={()=>setView(v)} style={{padding:"5px 13px",borderRadius:8,border:view===v?"none":`0.5px solid ${t.border}`,background:view===v?"#6366f1":"transparent",color:view===v?"white":t.muted,fontSize:12,fontWeight:500,cursor:"pointer"}}>{l}</button>
           ))}
         </div>
@@ -425,15 +558,57 @@ export default function App(){
 
       <div style={{padding:"18px 18px 90px",maxWidth:660,margin:"0 auto"}}>
 
+        {view==="home"&&(
+          <>
+            <div style={{textAlign:"center",padding:"24px 0 16px",display:"flex",alignItems:"center",justifyContent:"center",gap:12}}>
+              <span className="banana">🍌</span>
+              <span style={{fontSize:18,fontWeight:600,color:t.muted,letterSpacing:"0.02em"}}>Banana Version 3</span>
+            </div>
+
+            <div style={C()}>
+              <div style={{fontSize:11,fontWeight:500,color:t.hint,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Diese Woche</div>
+              <div style={{fontSize:40,fontWeight:400,fontVariantNumeric:"tabular-nums",color:"#6366f1",lineHeight:1}}>{fmtMs(weekMs)}</div>
+              <div style={{fontSize:12,color:t.hint,marginTop:6}}>{workSessions.filter(s=>s.start>=ws2.getTime()).length} Einträge</div>
+            </div>
+
+            {work?(
+              <div style={C(wCol+"50")}>
+                <div style={{fontSize:11,fontWeight:500,color:t.hint,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Aktiver Tracker{work.taetigkeit?` · ${work.taetigkeit}`:""}</div>
+                <div style={{fontSize:40,fontWeight:400,fontVariantNumeric:"tabular-nums",color:wCol,lineHeight:1,marginBottom:4}}>{fmtMs(wNet)}</div>
+                {drive&&<div style={{fontSize:13,color:dCol,marginTop:4}}>🚗 {fmtMs(dNet)}</div>}
+                <button onClick={()=>setView("tracker")} style={{width:"100%",padding:"11px",background:"#6366f114",border:"0.5px solid #6366f140",borderRadius:9,color:"#6366f1",fontSize:13,fontWeight:500,cursor:"pointer",marginTop:14}}>→ Zum Tracker</button>
+                <div style={{textAlign:"center",fontSize:11,color:t.hint,marginTop:10}}>✓ Zeiten laufen auch bei geschlossener App weiter</div>
+              </div>
+            ):(
+              <>
+                <button onClick={()=>{setTaetigkeitModal(true);setTaetigkeitInput("");}} style={{width:"100%",padding:"16px",background:"#6366f1",border:"none",borderRadius:12,color:"white",fontSize:16,fontWeight:600,cursor:"pointer",marginBottom:12}}>▶ Einstempeln</button>
+              </>
+            )}
+            <button onClick={()=>setRuleManagerOpen(true)} style={{width:"100%",padding:"14px",background:"transparent",border:`1.5px solid ${t.border}`,borderRadius:12,color:t.muted,fontSize:14,fontWeight:500,cursor:"pointer",marginBottom:10}}>⚙ Regel erstellen</button>
+            {!isPWA()&&(installPrompt||isIOS)&&(
+              <button onClick={handleInstallPwa} style={{width:"100%",padding:"14px",background:"transparent",border:`1.5px solid #6366f140`,borderRadius:12,color:"#6366f1",fontSize:14,fontWeight:500,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+                📱 App auf Homescreen installieren
+              </button>
+            )}
+          </>
+        )}
+
         {view==="tracker"&&(
           <>
-            <div style={C(work?wCol+"50":t.border)}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:work?14:0}}>
-                <span style={{fontSize:11,fontWeight:500,color:t.hint,textTransform:"uppercase",letterSpacing:"0.07em"}}>Arbeitszeit{work&&work.taetigkeit?` · ${work.taetigkeit}`:""}</span>
-                {work&&showWorkDot&&(<button onClick={()=>setShowWorkDot(false)} style={{background:"none",border:"none",cursor:"pointer",padding:2}}><div className="dp" style={{width:9,height:9,borderRadius:"50%",background:wCol}}/></button>)}
+            {!work?(
+              <div style={{textAlign:"center",padding:"60px 20px",color:t.hint}}>
+                <div style={{fontSize:36,marginBottom:14}}>⏱</div>
+                <div style={{fontSize:15,fontWeight:500,marginBottom:6,color:t.text}}>Kein aktiver Tracker</div>
+                <div style={{fontSize:13,marginBottom:24}}>Stempele auf der Home-Seite ein</div>
+                <button onClick={()=>setView("home")} style={{padding:"11px 28px",background:"#6366f114",border:"0.5px solid #6366f140",borderRadius:10,color:"#6366f1",fontSize:14,fontWeight:500,cursor:"pointer"}}>→ Home</button>
               </div>
-              {work?(
-                <>
+            ):(
+              <>
+                <div style={C(wCol+"50")}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                    <span style={{fontSize:11,fontWeight:500,color:t.hint,textTransform:"uppercase",letterSpacing:"0.07em"}}>Arbeitszeit{work.taetigkeit?` · ${work.taetigkeit}`:""}</span>
+                    {showWorkDot&&(<button onClick={()=>setShowWorkDot(false)} style={{background:"none",border:"none",cursor:"pointer",padding:2}}><div className="dp" style={{width:9,height:9,borderRadius:"50%",background:wCol}}/></button>)}
+                  </div>
                   <div style={{textAlign:"center",padding:"6px 0 14px"}}>
                     <div style={{fontSize:58,fontWeight:400,fontVariantNumeric:"tabular-nums",letterSpacing:"-0.03em",color:wCol,lineHeight:1}}>{fmtMs(wNet)}</div>
                     {wPMs>0&&<div style={{fontSize:12,color:t.hint,marginTop:5}}>Pausen {fmtMs(wPMs)}</div>}
@@ -444,17 +619,9 @@ export default function App(){
                     {!drive&&<button onClick={handleWorkPause} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`)}>{work.paused?"▶ Weiter":"⏸ Pause"}</button>}
                     <button onClick={()=>setConfirmStop(true)} style={Btn("#ef444414","#ef4444","0.5px solid #ef444440")}>⏹ Ausstempeln</button>
                   </div>
-                </>
-              ):(
-                <div style={{paddingTop:14}}>
-                  <button onClick={()=>{setTaetigkeitModal(true);setTaetigkeitInput("");}} style={{width:"100%",padding:"13px",background:"#6366f1",border:"none",borderRadius:10,color:"white",fontSize:15,fontWeight:500,cursor:"pointer"}}>▶ Einstempeln</button>
                 </div>
-              )}
-            </div>
 
-            {work&&(
-              <>
-                {!driveExpanded?<div style={C(drive?dCol+"50":t.border,0,0)}>
+                {!driveExpanded?<div style={C(drive?dCol+"50":t.border)}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setDriveExpanded(true)}>
                     <div style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
                       <span style={{fontSize:20}}>🚗</span>
@@ -486,7 +653,7 @@ export default function App(){
                       <div style={{display:"flex",gap:8,marginTop:4}}>
                         <button onClick={handleDrivePause} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`)}>{drive.paused?"▶":"⏸"}</button>
                         <button onClick={stopDrive} style={Btn("#3b82f614","#3b82f6","0.5px solid #3b82f640")}>⏹ Ende</button>
-                        <button onClick={()=>setDriveExpanded(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>⬇ Einklappen</button>
+                        <button onClick={()=>setDriveExpanded(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>▲ Einklappen</button>
                       </div>
                     </>
                   ):(
@@ -495,22 +662,48 @@ export default function App(){
                     </div>
                   )}
                 </div>}
-              </>
-            )}
 
-            {work&&(
-              !showInlineNote?(
-                <button onClick={()=>setShowInlineNote(true)} style={{width:"100%",padding:"10px 14px",background:"transparent",border:`0.5px solid ${t.border}`,borderRadius:10,color:t.hint,fontSize:13,cursor:"pointer",textAlign:"left"}}>✏ Notiz erfassen...</button>
-              ):(
-                <div style={C()}>
-                  <textarea autoFocus value={inlineNoteText} onChange={e=>setInlineNoteText(e.target.value)} placeholder="Notiz eingeben..." style={{width:"100%",minHeight:72,background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,padding:"9px 12px",color:t.text,fontSize:14,resize:"none",boxSizing:"border-box"}}/>
-                  <div style={{display:"flex",gap:8,marginTop:8}}>
-                    <button onClick={()=>setCameraOpen(true)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>📷 Foto</button>
-                    <button onClick={()=>{setShowInlineNote(false);setInlineNoteText("");}} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
-                    <button onClick={saveInlineNote} disabled={!inlineNoteText.trim()} style={Btn(inlineNoteText.trim()?"#6366f1":"#6366f140","white")}>Speichern</button>
+                {extraTrackers.map(et=>{
+                  const etNet=calcNet(et,now),etPMs=calcPMs(et,now);
+                  return(
+                    <div key={et.id} style={{...C(et.color+"60"),marginBottom:8}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",marginBottom:et.collapsed?0:10}} onClick={()=>toggleCollapseTracker(et.id)}>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          {!et.paused&&!et.collapsed&&<div style={{width:7,height:7,borderRadius:"50%",background:et.color,animation:"dp 2s ease-in-out infinite"}}/>}
+                          <span style={{fontSize:11,fontWeight:500,color:et.color,textTransform:"uppercase",letterSpacing:"0.07em"}}>{et.label}</span>
+                          {et.collapsed&&<span style={{fontSize:13,fontVariantNumeric:"tabular-nums",color:et.color,fontWeight:500}}>{fmtMs(etNet)}</span>}
+                        </div>
+                        <span style={{fontSize:13,color:t.hint}}>{et.collapsed?"▼":"▲"}</span>
+                      </div>
+                      {!et.collapsed&&<>
+                        <div style={{textAlign:"center",padding:"4px 0 10px"}}>
+                          <div style={{fontSize:44,fontWeight:400,fontVariantNumeric:"tabular-nums",color:et.color,lineHeight:1}}>{fmtMs(etNet)}</div>
+                          {etPMs>0&&<div style={{fontSize:11,color:t.hint,marginTop:4}}>Pausen {fmtMs(etPMs)}</div>}
+                        </div>
+                        <div style={{display:"flex",gap:8}}>
+                          <button onClick={e=>{e.stopPropagation();pauseExtraTracker(et.id);}} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`)}>{et.paused?"▶ Weiter":"⏸ Pause"}</button>
+                          <button onClick={e=>{e.stopPropagation();stopExtraTracker(et.id);}} style={Btn("#ef444414","#ef4444","0.5px solid #ef444440")}>⏹ Stop</button>
+                        </div>
+                      </>}
+                    </div>
+                  );
+                })}
+                <button onClick={()=>setExtraTrackerModal(true)} style={{width:"100%",padding:"8px",background:"transparent",border:`0.5px dashed ${t.border}`,borderRadius:10,color:t.hint,fontSize:13,cursor:"pointer",marginBottom:8}}>+ Weiterer Tracker</button>
+
+                {!showInlineNote?(
+                  <button onClick={()=>setShowInlineNote(true)} style={{width:"100%",padding:"10px 14px",background:"transparent",border:`0.5px solid ${t.border}`,borderRadius:10,color:t.hint,fontSize:13,cursor:"pointer",textAlign:"left"}}>✏ Notiz erfassen...</button>
+                ):(
+                  <div style={C()}>
+                    <textarea autoFocus value={inlineNoteText} onChange={e=>setInlineNoteText(e.target.value)} placeholder="Notiz eingeben..." style={{width:"100%",minHeight:72,background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,padding:"9px 12px",color:t.text,fontSize:14,resize:"none",boxSizing:"border-box"}}/>
+                    <div style={{display:"flex",gap:8,marginTop:8}}>
+                      <button onClick={()=>{setShowInlineNote(false);setInlineNoteText("");}} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
+                      <button onClick={saveInlineNote} disabled={!inlineNoteText.trim()} style={Btn(inlineNoteText.trim()?"#6366f1":"#6366f140","white")}>Speichern</button>
+                    </div>
                   </div>
-                </div>
-              )
+                )}
+
+                <div style={{textAlign:"center",fontSize:11,color:t.hint,padding:"10px 0 4px"}}>✓ Tracker läuft auch im Hintergrund weiter</div>
+              </>
             )}
           </>
         )}
@@ -537,7 +730,7 @@ export default function App(){
                 </div>}
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,color:t.hint}}>
                   <span>{fmtDate(n.ts)} {fmtTime(n.ts)}{n.images&&n.images.length>0&&` · ${n.images.length} Bilder`}</span>
-                  <button onClick={()=>setNotes(ns=>ns.filter(x=>x.id!==n.id))} style={{border:"none",background:"none",color:"#ef4444",cursor:"pointer"}}>✕</button>
+                  <button onClick={()=>{setNotes(ns=>ns.filter(x=>x.id!==n.id));db.notes.delete(n.id);}} style={{border:"none",background:"none",color:"#ef4444",cursor:"pointer"}}>✕</button>
                 </div>
               </div>
             ))}
@@ -572,17 +765,31 @@ export default function App(){
 
               {(() => {
                 const filterDate=new Date();filterDate.setDate(filterDate.getDate()-dashboardFilters.daysBack);
-                let entries=[...workSessions.map(s=>({...s,type:"Arbeit"})),...driveSessions.map(s=>({...s,type:"Fahrt"}))];
+                let entries=[
+                  ...workSessions.map(s=>({...s,type:"Arbeit"})),
+                  ...driveSessions.map(s=>({...s,type:"Fahrt"})),
+                  ...customSessions.map(s=>({...s,type:"Extra"})),
+                ];
                 if(dashboardFilters.gps) entries=[...entries,...gpsLog.map(g=>({ts:g.ts,type:"GPS",lat:g.lat,lng:g.lng}))];
+                if(dashboardFilters.notes) entries=[...entries,...notes.map(n=>({...n,type:"Notiz"}))];
                 entries=entries.filter(e=>new Date(e.ts||e.start)>=filterDate);
                 if(entries.length===0) return <div style={{textAlign:"center",padding:"30px",color:t.hint}}>Keine Einträge</div>;
+                const typeColor={Arbeit:"#6366f1",Fahrt:"#3b82f6",Extra:"#8b5cf6",GPS:"#f97316",Notiz:"#94a3b8"};
                 return entries.sort((a,b)=>(b.ts||b.start)-(a.ts||a.start)).map((s,i)=>(
                   <div key={i} style={{padding:"10px 0",borderBottom:`0.5px solid ${t.border}`,fontSize:12}}>
-                    <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:4}}>
-                      <span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:s.type==="Fahrt"?"#3b82f614":s.type==="GPS"?"#f9731614":"#6366f114",color:s.type==="Fahrt"?"#3b82f6":s.type==="GPS"?"#f97316":"#6366f1"}}>{s.type}</span>
-                      {s.taetigkeit&&<span style={{color:t.hint}}>{s.taetigkeit}</span>}
+                    <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:4,justifyContent:"space-between"}}>
+                      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                        <span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:(typeColor[s.type]||"#6366f1")+"14",color:typeColor[s.type]||"#6366f1"}}>{s.type==="Extra"?s.label||"Extra":s.type}</span>
+                        {s.taetigkeit&&<span style={{color:t.hint}}>{s.taetigkeit}</span>}
+                        {s.netMs&&<span style={{color:t.hint}}>{toH(s.netMs).toFixed(2)}h</span>}
+                        {s.stars>0&&<span style={{color:"#eab308"}}>{"★".repeat(s.stars)}</span>}
+                      </div>
+                      {(s.type==="Arbeit"||s.type==="Fahrt")&&s.end&&(
+                        <button onClick={()=>openEditSession(s,s.type)} style={{padding:"2px 8px",border:`0.5px solid ${t.border}`,borderRadius:5,background:"transparent",color:t.muted,fontSize:11,cursor:"pointer"}}>✎ Edit</button>
+                      )}
                     </div>
-                    <div style={{color:t.hint}}>{fmtDate(s.ts||s.start)} {fmtTime(s.ts||s.start)}{s.type!=="GPS"?`–${fmtTime(s.end)}`:""}</div>
+                    <div style={{color:t.hint}}>{fmtDate(s.ts||s.start)} {fmtTime(s.ts||s.start)}{s.type!=="GPS"&&s.type!=="Notiz"&&s.end?`–${fmtTime(s.end)}`:""}</div>
+                    {s.comment&&<div style={{color:t.hint,marginTop:2,fontStyle:"italic"}}>{s.comment}</div>}
                   </div>
                 ));
               })()}
@@ -611,17 +818,23 @@ export default function App(){
             <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Regeln verwalten</div>
             <div style={{marginBottom:16,padding:12,background:t.s2,borderRadius:8}}>
               <div style={{fontSize:12,color:t.hint,marginBottom:8}}>Neue Regel</div>
-              <div style={{display:"flex",gap:8,marginBottom:8}}>
-                <input type="number" value={newRuleHours} onChange={e=>setNewRuleHours(Math.max(0,parseInt(e.target.value)||0))} placeholder="Std" min="0" style={{width:"50px",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text}}/>
-                <span>:</span>
-                <input type="number" value={newRuleMinutes} onChange={e=>setNewRuleMinutes(Math.min(59,Math.max(0,parseInt(e.target.value)||0)))} placeholder="Min" min="0" max="59" style={{width:"50px",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text}}/>
+              <input autoFocus type="text" value={newRuleName} onChange={e=>setNewRuleName(e.target.value)} placeholder="Name der Regel (z.B. Mittagspause)" style={{width:"100%",padding:"9px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text,boxSizing:"border-box",marginBottom:8}}/>
+              <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
+                <span style={{fontSize:12,color:t.hint,whiteSpace:"nowrap"}}>Nach</span>
+                <input type="number" value={newRuleHours} onChange={e=>setNewRuleHours(Math.max(0,parseInt(e.target.value)||0))} placeholder="Std" min="0" style={{width:"55px",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text}}/>
+                <span style={{color:t.hint}}>h</span>
+                <input type="number" value={newRuleMinutes} onChange={e=>setNewRuleMinutes(Math.min(59,Math.max(0,parseInt(e.target.value)||0)))} placeholder="Min" min="0" max="59" style={{width:"55px",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text}}/>
+                <span style={{fontSize:12,color:t.hint}}>min</span>
               </div>
-              <input type="text" value={newRuleText} onChange={e=>setNewRuleText(e.target.value)} placeholder="Meldungstext" style={{width:"100%",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text,boxSizing:"border-box",marginBottom:8}}/>
-              <button onClick={createRule} disabled={!newRuleText.trim()} style={{width:"100%",padding:"8px",background:newRuleText.trim()?"#6366f1":"#6366f140",border:"none",borderRadius:6,color:"white",fontSize:12,cursor:"pointer"}}>+ Hinzufügen</button>
+              <input type="text" value={newRuleText} onChange={e=>setNewRuleText(e.target.value)} placeholder="Push-Benachrichtigung Text" style={{width:"100%",padding:"9px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text,boxSizing:"border-box",marginBottom:8}}/>
+              <button onClick={createRule} disabled={!newRuleText.trim()} style={{width:"100%",padding:"10px",background:newRuleText.trim()?"#6366f1":"#6366f140",border:"none",borderRadius:6,color:"white",fontSize:13,fontWeight:500,cursor:"pointer"}}>+ Regel erstellen</button>
             </div>
             {rules.map(r=>(
               <div key={r.id} style={{padding:10,background:t.s2,borderRadius:8,display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,fontSize:12}}>
-                <div><div style={{fontWeight:500}}>{r.text}</div><div style={{color:t.hint}}>{pad(r.hours)}:{pad(r.minutes)}</div></div>
+                <div>
+                  <div style={{fontWeight:500}}>{r.name||r.text}</div>
+                  <div style={{color:t.hint,marginTop:2}}>{pad(r.hours)}h {pad(r.minutes)}min · {r.text}</div>
+                </div>
                 <button onClick={()=>deleteRule(r.id)} style={{padding:"4px 8px",background:"#ef444414",border:"none",borderRadius:6,color:"#ef4444",fontSize:11,cursor:"pointer"}}>Löschen</button>
               </div>
             ))}
@@ -630,23 +843,61 @@ export default function App(){
         </div>
       )}
 
-      {cameraOpen&&(
-        <div style={{position:"fixed",inset:0,background:"#00000090",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:200}}>
-          <video ref={cameraRef} autoPlay style={{width:"100%",maxWidth:500,borderRadius:12,marginBottom:16}}/>
-          <div style={{display:"flex",gap:8}}>
-            <button onClick={()=>setCameraOpen(false)} style={Btn("#ef444414","#ef4444","0.5px solid #ef444440")}>Abbrechen</button>
-            <button onClick={captureImage} style={Btn("#6366f1","white")}>📸 Foto</button>
+      {drivepauseModal&&(
+        <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box"}}>
+            <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Lenkzeit pausieren</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={confirmDrivePause} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Nur Fahrt</button>
+              <button onClick={confirmDrivePauseBoth} style={Btn("#6366f1","white")}>Fahrt + Arbeit</button>
+            </div>
           </div>
         </div>
       )}
 
-      {drivepauseModal&&(
+      {editSession&&(
         <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
-          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box",backdropFilter:t.backdrop}}>
-            <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Arbeitszeit auch pausieren?</div>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box",maxHeight:"85vh",overflowY:"auto"}}>
+            <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Eintrag bearbeiten · {editSession.type}</div>
+            <div style={{fontSize:12,color:t.hint,marginBottom:4}}>Start</div>
+            <input type="datetime-local" value={editStart} onChange={e=>setEditStart(e.target.value)} style={{width:"100%",padding:"10px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,color:t.text,marginBottom:12,boxSizing:"border-box"}}/>
+            <div style={{fontSize:12,color:t.hint,marginBottom:4}}>Ende</div>
+            <input type="datetime-local" value={editEnd} onChange={e=>setEditEnd(e.target.value)} style={{width:"100%",padding:"10px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,color:t.text,marginBottom:12,boxSizing:"border-box"}}/>
+            {editSession.type==="Arbeit"&&<>
+              <div style={{fontSize:12,color:t.hint,marginBottom:4}}>Tätigkeit</div>
+              <input type="text" value={editTaetigkeit} onChange={e=>setEditTaetigkeit(e.target.value)} style={{width:"100%",padding:"10px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,color:t.text,marginBottom:12,boxSizing:"border-box"}}/>
+              <div style={{fontSize:12,color:t.hint,marginBottom:8}}>Bewertung</div>
+              <div style={{display:"flex",gap:8,marginBottom:16}}>
+                {[1,2,3,4,5].map(s=>(
+                  <button key={s} onClick={()=>setEditStars(s)} style={{background:"none",border:`2px solid ${s<=editStars?"#6366f1":t.border}`,borderRadius:8,fontSize:24,cursor:"pointer",opacity:s<=editStars?1:0.3,padding:"6px",flex:1}}>★</button>
+                ))}
+              </div>
+            </>}
+            <div style={{fontSize:11,color:t.hint,marginBottom:14}}>
+              Netto: {toH(Math.max(0,new Date(editEnd).getTime()-new Date(editStart).getTime()-(editSession.data.pauseMs||0))).toFixed(2)}h (Pausen bleiben erhalten)
+            </div>
             <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>confirmDrivePause(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Nur Fahrt</button>
-              <button onClick={()=>confirmDrivePause(true)} style={Btn("#6366f1","white")}>Beide</button>
+              <button onClick={()=>setEditSession(null)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
+              <button onClick={saveEditedSession} style={Btn("#6366f1","white")}>Speichern</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {extraTrackerModal&&(
+        <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box",maxHeight:"80vh",overflowY:"auto"}}>
+            <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Weiterer Tracker</div>
+            <input autoFocus value={extraTrackerInput} onChange={e=>setExtraTrackerInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")startExtraTracker();}} placeholder="z.B. Besprechung, Ladezeit..." style={{width:"100%",padding:"12px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:9,color:t.text,boxSizing:"border-box",marginBottom:14}}/>
+            <div style={{fontSize:12,color:t.hint,marginBottom:8}}>Regel</div>
+            {[{id:"standard",name:"Ohne Regel"},...rules].map(opt=>(
+              <button key={opt.id} onClick={()=>setExtraTrackerRule(opt.id)} style={{width:"100%",padding:"10px",borderRadius:8,border:`2px solid ${extraTrackerRule===opt.id?"#6366f1":t.border}`,background:extraTrackerRule===opt.id?"#6366f114":"transparent",color:extraTrackerRule===opt.id?"#6366f1":t.text,fontSize:12,cursor:"pointer",marginBottom:6,textAlign:"left"}}>
+                {extraTrackerRule===opt.id?"✓ ":""}{opt.name||opt.text}
+              </button>
+            ))}
+            <div style={{display:"flex",gap:8,marginTop:8}}>
+              <button onClick={()=>{setExtraTrackerModal(false);setExtraTrackerInput("");}} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
+              <button onClick={startExtraTracker} disabled={!extraTrackerInput.trim()} style={Btn(extraTrackerInput.trim()?"#6366f1":"#6366f140","white")}>Starten</button>
             </div>
           </div>
         </div>
@@ -660,7 +911,7 @@ export default function App(){
             <input type="date" value={exportToDate} onChange={e=>setExportToDate(e.target.value)} style={{width:"100%",padding:"10px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,color:t.text,marginBottom:12,boxSizing:"border-box"}}/>
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>setExportModal(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
-              <button onClick={()=>exportCSV(exportFromDate,exportToDate)} style={Btn("#6366f1","white")}>↓ Exportieren</button>
+              <button onClick={()=>openExportChoice(exportFromDate,exportToDate)} style={Btn("#6366f1","white")}>↓ Weiter</button>
             </div>
           </div>
         </div>
@@ -695,6 +946,26 @@ export default function App(){
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {exportChoiceModal&&pendingCsv&&(
+        <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box"}}>
+            <div style={{fontWeight:500,fontSize:15,marginBottom:6}}>Export: {pendingCsv.filename}</div>
+            <div style={{fontSize:12,color:t.hint,marginBottom:18}}>Wie möchtest du die Datei exportieren?</div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <button onClick={downloadCsv} style={{width:"100%",padding:"14px",background:"#6366f114",border:"0.5px solid #6366f140",borderRadius:10,color:"#6366f1",fontSize:14,fontWeight:500,cursor:"pointer",textAlign:"left"}}>
+                ⬇ Herunterladen
+                <div style={{fontSize:11,color:t.hint,marginTop:2,fontWeight:400}}>CSV-Datei direkt auf das Gerät speichern</div>
+              </button>
+              <button onClick={shareViaMail} style={{width:"100%",padding:"14px",background:"#22c55e14",border:"0.5px solid #22c55e40",borderRadius:10,color:"#22c55e",fontSize:14,fontWeight:500,cursor:"pointer",textAlign:"left"}}>
+                ✉ Per Mail senden
+                <div style={{fontSize:11,color:t.hint,marginTop:2,fontWeight:400}}>Mail-App öffnen mit CSV-Datei im Anhang</div>
+              </button>
+              <button onClick={()=>{setExportChoiceModal(false);setPendingCsv(null);}} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
+            </div>
           </div>
         </div>
       )}
@@ -739,10 +1010,38 @@ export default function App(){
         </div>
       )}
 
+      {iosInstallModal&&(
+        <div style={{position:"fixed",inset:0,background:"#00000080",display:"flex",alignItems:"flex-end",zIndex:300}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"18px 18px 0 0",padding:"24px 20px 36px",maxWidth:660,margin:"0 auto",boxSizing:"border-box"}}>
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{fontSize:36,marginBottom:8}}>📱</div>
+              <div style={{fontWeight:600,fontSize:17}}>App installieren</div>
+              <div style={{fontSize:13,color:t.hint,marginTop:4}}>Füge ZeitTracker zum Home-Bildschirm hinzu</div>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:16,marginBottom:28}}>
+              {[
+                {n:1,icon:"⎋",text:<>Tippe auf das <strong>Teilen-Symbol</strong> (⎋ unten in der Safari-Leiste)</>},
+                {n:2,icon:"➕",text:<>Scrolle und wähle <strong>„Zum Home-Bildschirm"</strong></>},
+                {n:3,icon:"✓",text:<>Tippe oben rechts auf <strong>„Hinzufügen"</strong></>},
+              ].map(({n,icon,text})=>(
+                <div key={n} style={{display:"flex",gap:14,alignItems:"center"}}>
+                  <div style={{width:36,height:36,background:"#6366f114",border:"1px solid #6366f130",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:"#6366f1",flexShrink:0}}>{n}</div>
+                  <div style={{fontSize:14,lineHeight:1.55,color:t.text}}>{text}</div>
+                </div>
+              ))}
+            </div>
+            <button onClick={()=>setIosInstallModal(false)} style={{width:"100%",padding:"14px",background:"#6366f1",border:"none",borderRadius:12,color:"white",fontSize:15,fontWeight:600,cursor:"pointer"}}>Verstanden ✓</button>
+          </div>
+        </div>
+      )}
+
       <div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",zIndex:100,display:"flex",gap:8}}>
-        <button onClick={()=>setDark(d=>!d)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>☀/🌙</button>
-        <button onClick={()=>setTransparent(t=>!t)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔷</button>
-        <button onClick={()=>setNotificationEnabled(n=>!n)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:notificationEnabled?"#6366f1":t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔔</button>
+        <button onClick={()=>setDark(d=>!d)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer"}}>
+          {dark?"☀ Hell":"🌙 Dunkel"}
+        </button>
+        <button onClick={toggleNotifications} title={notificationEnabled?"Benachrichtigungen aus":"Benachrichtigungen ein"} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${notificationEnabled?"#6366f1":t.border}`,color:notificationEnabled?"#6366f1":t.muted,fontSize:13,cursor:"pointer"}}>
+          {notificationEnabled?"🔔":"🔕"}
+        </button>
       </div>
     </div>
   );
