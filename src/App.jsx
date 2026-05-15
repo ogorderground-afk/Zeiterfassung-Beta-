@@ -90,6 +90,7 @@ export default function App(){
   const [deleteToDate,setDeleteToDate]=useState("");
   const [deleteAll,setDeleteAll]=useState(false);
   const [appLoading, setAppLoading] = useState(true);
+  const [installPrompt,setInstallPrompt]=useState(null);
 
   useEffect(()=>{
     const init=async()=>{
@@ -133,6 +134,11 @@ export default function App(){
       if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(err=>console.log("SW registration failed:",err));}
     };
     init();
+
+    const onBeforeInstall=(e)=>{e.preventDefault();setInstallPrompt(e);};
+    window.addEventListener("beforeinstallprompt",onBeforeInstall);
+    window.addEventListener("appinstalled",()=>setInstallPrompt(null));
+    return()=>window.removeEventListener("beforeinstallprompt",onBeforeInstall);
   },[]);
 
   useEffect(()=>{if(work){setSetting('work',{...work,_lastSave:Date.now()});}else{db.settings.delete('work');}},[work]);
@@ -411,10 +417,10 @@ export default function App(){
       {appLoading&&<div style={{position:"fixed",inset:0,background:"#0f1117",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999,color:"#94a3b8",fontSize:14}}>Laden…</div>}
       <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}body{margin:0;padding:0}`}</style>
 
-      {!isPWA()&&(
-        <div style={{background:"#6366f1",color:"white",padding:"12px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12}}>
-          <span>📱 Als App installieren</span>
-          <button onClick={()=>{const a=document.createElement("a");a.href=window.location.href;a.download="ZeitTracker.html";a.click();}} style={{background:"white",color:"#6366f1",border:"none",padding:"6px 12px",borderRadius:6,fontSize:11,fontWeight:500,cursor:"pointer"}}>⬇ Download</button>
+      {!isPWA()&&installPrompt&&(
+        <div style={{background:"#6366f1",color:"white",padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontSize:14,fontWeight:500}}>📱 Zum Homescreen hinzufügen</span>
+          <button onClick={async()=>{await installPrompt.prompt();const r=await installPrompt.userChoice;if(r.outcome==="accepted")setInstallPrompt(null);}} style={{background:"white",color:"#6366f1",border:"none",padding:"10px 20px",borderRadius:8,fontSize:14,fontWeight:600,cursor:"pointer"}}>Installieren</button>
         </div>
       )}
 
