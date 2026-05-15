@@ -478,7 +478,7 @@ export default function App(){
   return(
     <div style={{fontFamily:"system-ui,-apple-system,sans-serif",background:t.bg,minHeight:"100vh",color:t.text}}>
       {appLoading&&<div style={{position:"fixed",inset:0,background:"#0f1117",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999,color:"#94a3b8",fontSize:14}}>Laden…</div>}
-      <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}body{margin:0;padding:0}`}</style>
+      <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}@keyframes banana{0%{transform:rotate(-20deg) scale(1.1)}50%{transform:rotate(20deg) scale(1.1)}100%{transform:rotate(-20deg) scale(1.1)}}.banana{animation:banana 0.5s ease-in-out infinite;display:inline-block;font-size:72px;line-height:1}body{margin:0;padding:0}`}</style>
 
       {!isPWA()&&installPrompt&&(
         <div style={{background:"#6366f1",color:"white",padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -506,6 +506,10 @@ export default function App(){
       </nav>
 
       <div style={{padding:"18px 18px 90px",maxWidth:660,margin:"0 auto"}}>
+
+        <div style={{textAlign:"center",padding:"24px 0 8px"}}>
+          <span className="banana">🍌</span>
+        </div>
 
         {view==="tracker"&&(
           <>
