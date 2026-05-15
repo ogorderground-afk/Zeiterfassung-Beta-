@@ -34,7 +34,7 @@ const isPWA=()=>window.matchMedia("(display-mode: standalone)").matches||window.
 
 export default function App(){
   const [dark,setDark]=useState(true);
-  const [view,setView]=useState("tracker");
+  const [view,setView]=useState("home");
   const [storageWarning,setStorageWarning]=useState(null);
   const [gpsInterval,setGpsInterval]=useState(10);
   const [drivepauseModal,setDrivepauseModal]=useState(false);
@@ -256,7 +256,7 @@ export default function App(){
     setWork({start:Date.now(),pauses:[],paused:false,taetigkeit:ta,ruleType:selectedRule});
     setNow(Date.now());setShowWorkDot(true);
     logA("EINSTEMPELN",ta,curLoc);
-    setTaetigkeitModal(false);setTaetigkeitInput("");
+    setTaetigkeitModal(false);setTaetigkeitInput("");setView("tracker");
   };
 
   const handleWorkPause=()=>{
@@ -327,7 +327,7 @@ export default function App(){
     setWork(null);setShowWorkDot(true);
     setTriggeredRules([]);
     setShowInlineNote(false);setInlineNoteText("");
-    if(view==="notizen")setView("tracker");
+    setView("home");
     setRatingModal(false);setDayStars(0);setDayComment("");
   };
 
@@ -520,7 +520,7 @@ export default function App(){
               <button onClick={()=>setRuleManagerOpen(true)} style={{padding:"5px 11px",borderRadius:8,border:`0.5px solid ${t.border}`,background:"transparent",color:t.muted,fontSize:11,fontWeight:500,cursor:"pointer"}}>⚙ Regel</button>
             </>
           )}
-          {[["tracker","Tracker"],["notizen","Notizen"],["dashboard","Dashboard"]].map(([v,l])=>(
+          {[["home","Home"],["tracker","Tracker"],["dashboard","Dashboard"]].map(([v,l])=>(
             <button key={v} onClick={()=>setView(v)} style={{padding:"5px 13px",borderRadius:8,border:view===v?"none":`0.5px solid ${t.border}`,background:view===v?"#6366f1":"transparent",color:view===v?"white":t.muted,fontSize:12,fontWeight:500,cursor:"pointer"}}>{l}</button>
           ))}
         </div>
@@ -528,20 +528,52 @@ export default function App(){
 
       <div style={{padding:"18px 18px 90px",maxWidth:660,margin:"0 auto"}}>
 
-        <div style={{textAlign:"center",padding:"24px 0 8px",display:"flex",alignItems:"center",justifyContent:"center",gap:12}}>
-          <span className="banana">🍌</span>
-          <span style={{fontSize:18,fontWeight:600,color:t.muted,letterSpacing:"0.02em"}}>Banana Version</span>
-        </div>
+        {view==="home"&&(
+          <>
+            <div style={{textAlign:"center",padding:"24px 0 16px",display:"flex",alignItems:"center",justifyContent:"center",gap:12}}>
+              <span className="banana">🍌</span>
+              <span style={{fontSize:18,fontWeight:600,color:t.muted,letterSpacing:"0.02em"}}>Banana Version</span>
+            </div>
+
+            <div style={C()}>
+              <div style={{fontSize:11,fontWeight:500,color:t.hint,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Diese Woche</div>
+              <div style={{fontSize:40,fontWeight:400,fontVariantNumeric:"tabular-nums",color:"#6366f1",lineHeight:1}}>{fmtMs(weekMs)}</div>
+              <div style={{fontSize:12,color:t.hint,marginTop:6}}>{workSessions.filter(s=>s.start>=ws2.getTime()).length} Einträge</div>
+            </div>
+
+            {work?(
+              <div style={C(wCol+"50")}>
+                <div style={{fontSize:11,fontWeight:500,color:t.hint,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Aktiver Tracker{work.taetigkeit?` · ${work.taetigkeit}`:""}</div>
+                <div style={{fontSize:40,fontWeight:400,fontVariantNumeric:"tabular-nums",color:wCol,lineHeight:1,marginBottom:4}}>{fmtMs(wNet)}</div>
+                {drive&&<div style={{fontSize:13,color:dCol,marginTop:4}}>🚗 {fmtMs(dNet)}</div>}
+                <button onClick={()=>setView("tracker")} style={{width:"100%",padding:"11px",background:"#6366f114",border:"0.5px solid #6366f140",borderRadius:9,color:"#6366f1",fontSize:13,fontWeight:500,cursor:"pointer",marginTop:14}}>→ Zum Tracker</button>
+                <div style={{textAlign:"center",fontSize:11,color:t.hint,marginTop:10}}>✓ Zeiten laufen auch bei geschlossener App weiter</div>
+              </div>
+            ):(
+              <>
+                <button onClick={()=>{setTaetigkeitModal(true);setTaetigkeitInput("");}} style={{width:"100%",padding:"16px",background:"#6366f1",border:"none",borderRadius:12,color:"white",fontSize:16,fontWeight:600,cursor:"pointer",marginBottom:12}}>▶ Einstempeln</button>
+              </>
+            )}
+            <button onClick={()=>setRuleManagerOpen(true)} style={{width:"100%",padding:"14px",background:"transparent",border:`1.5px solid ${t.border}`,borderRadius:12,color:t.muted,fontSize:14,fontWeight:500,cursor:"pointer"}}>⚙ Regel erstellen</button>
+          </>
+        )}
 
         {view==="tracker"&&(
           <>
-            <div style={C(work?wCol+"50":t.border)}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:work?14:0}}>
-                <span style={{fontSize:11,fontWeight:500,color:t.hint,textTransform:"uppercase",letterSpacing:"0.07em"}}>Arbeitszeit{work&&work.taetigkeit?` · ${work.taetigkeit}`:""}</span>
-                {work&&showWorkDot&&(<button onClick={()=>setShowWorkDot(false)} style={{background:"none",border:"none",cursor:"pointer",padding:2}}><div className="dp" style={{width:9,height:9,borderRadius:"50%",background:wCol}}/></button>)}
+            {!work?(
+              <div style={{textAlign:"center",padding:"60px 20px",color:t.hint}}>
+                <div style={{fontSize:36,marginBottom:14}}>⏱</div>
+                <div style={{fontSize:15,fontWeight:500,marginBottom:6,color:t.text}}>Kein aktiver Tracker</div>
+                <div style={{fontSize:13,marginBottom:24}}>Stempele auf der Home-Seite ein</div>
+                <button onClick={()=>setView("home")} style={{padding:"11px 28px",background:"#6366f114",border:"0.5px solid #6366f140",borderRadius:10,color:"#6366f1",fontSize:14,fontWeight:500,cursor:"pointer"}}>→ Home</button>
               </div>
-              {work?(
-                <>
+            ):(
+              <>
+                <div style={C(wCol+"50")}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                    <span style={{fontSize:11,fontWeight:500,color:t.hint,textTransform:"uppercase",letterSpacing:"0.07em"}}>Arbeitszeit{work.taetigkeit?` · ${work.taetigkeit}`:""}</span>
+                    {showWorkDot&&(<button onClick={()=>setShowWorkDot(false)} style={{background:"none",border:"none",cursor:"pointer",padding:2}}><div className="dp" style={{width:9,height:9,borderRadius:"50%",background:wCol}}/></button>)}
+                  </div>
                   <div style={{textAlign:"center",padding:"6px 0 14px"}}>
                     <div style={{fontSize:58,fontWeight:400,fontVariantNumeric:"tabular-nums",letterSpacing:"-0.03em",color:wCol,lineHeight:1}}>{fmtMs(wNet)}</div>
                     {wPMs>0&&<div style={{fontSize:12,color:t.hint,marginTop:5}}>Pausen {fmtMs(wPMs)}</div>}
@@ -552,18 +584,9 @@ export default function App(){
                     {!drive&&<button onClick={handleWorkPause} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`)}>{work.paused?"▶ Weiter":"⏸ Pause"}</button>}
                     <button onClick={()=>setConfirmStop(true)} style={Btn("#ef444414","#ef4444","0.5px solid #ef444440")}>⏹ Ausstempeln</button>
                   </div>
-                </>
-              ):(
-                <div style={{paddingTop:14,display:"flex",flexDirection:"column",gap:10}}>
-                  <button onClick={()=>{setTaetigkeitModal(true);setTaetigkeitInput("");}} style={{width:"100%",padding:"13px",background:"#6366f1",border:"none",borderRadius:10,color:"white",fontSize:15,fontWeight:500,cursor:"pointer"}}>▶ Einstempeln</button>
-                  <button onClick={()=>setRuleManagerOpen(true)} style={{width:"100%",padding:"13px",background:"transparent",border:`1.5px solid ${t.border}`,borderRadius:10,color:t.muted,fontSize:14,fontWeight:500,cursor:"pointer"}}>⚙ Regel erstellen</button>
                 </div>
-              )}
-            </div>
 
-            {work&&(
-              <>
-                {!driveExpanded?<div style={C(drive?dCol+"50":t.border,0,0)}>
+                {!driveExpanded?<div style={C(drive?dCol+"50":t.border)}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setDriveExpanded(true)}>
                     <div style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
                       <span style={{fontSize:20}}>🚗</span>
@@ -604,11 +627,7 @@ export default function App(){
                     </div>
                   )}
                 </div>}
-              </>
-            )}
 
-            {work&&(
-              <>
                 {extraTrackers.map(et=>{
                   const etNet=calcNet(et,now),etPMs=calcPMs(et,now);
                   return(
@@ -635,21 +654,21 @@ export default function App(){
                   );
                 })}
                 <button onClick={()=>setExtraTrackerModal(true)} style={{width:"100%",padding:"8px",background:"transparent",border:`0.5px dashed ${t.border}`,borderRadius:10,color:t.hint,fontSize:13,cursor:"pointer",marginBottom:8}}>+ Weiterer Tracker</button>
-              </>
-            )}
 
-            {work&&(
-              !showInlineNote?(
-                <button onClick={()=>setShowInlineNote(true)} style={{width:"100%",padding:"10px 14px",background:"transparent",border:`0.5px solid ${t.border}`,borderRadius:10,color:t.hint,fontSize:13,cursor:"pointer",textAlign:"left"}}>✏ Notiz erfassen...</button>
-              ):(
-                <div style={C()}>
-                  <textarea autoFocus value={inlineNoteText} onChange={e=>setInlineNoteText(e.target.value)} placeholder="Notiz eingeben..." style={{width:"100%",minHeight:72,background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,padding:"9px 12px",color:t.text,fontSize:14,resize:"none",boxSizing:"border-box"}}/>
-                  <div style={{display:"flex",gap:8,marginTop:8}}>
-                    <button onClick={()=>{setShowInlineNote(false);setInlineNoteText("");}} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
-                    <button onClick={saveInlineNote} disabled={!inlineNoteText.trim()} style={Btn(inlineNoteText.trim()?"#6366f1":"#6366f140","white")}>Speichern</button>
+                {!showInlineNote?(
+                  <button onClick={()=>setShowInlineNote(true)} style={{width:"100%",padding:"10px 14px",background:"transparent",border:`0.5px solid ${t.border}`,borderRadius:10,color:t.hint,fontSize:13,cursor:"pointer",textAlign:"left"}}>✏ Notiz erfassen...</button>
+                ):(
+                  <div style={C()}>
+                    <textarea autoFocus value={inlineNoteText} onChange={e=>setInlineNoteText(e.target.value)} placeholder="Notiz eingeben..." style={{width:"100%",minHeight:72,background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,padding:"9px 12px",color:t.text,fontSize:14,resize:"none",boxSizing:"border-box"}}/>
+                    <div style={{display:"flex",gap:8,marginTop:8}}>
+                      <button onClick={()=>{setShowInlineNote(false);setInlineNoteText("");}} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
+                      <button onClick={saveInlineNote} disabled={!inlineNoteText.trim()} style={Btn(inlineNoteText.trim()?"#6366f1":"#6366f140","white")}>Speichern</button>
+                    </div>
                   </div>
-                </div>
-              )
+                )}
+
+                <div style={{textAlign:"center",fontSize:11,color:t.hint,padding:"10px 0 4px"}}>✓ Tracker läuft auch im Hintergrund weiter</div>
+              </>
             )}
           </>
         )}
