@@ -133,8 +133,8 @@ export default function App(){
         db.gpsLog.orderBy('ts').toArray().then(items=>items.map(({id,...rest})=>rest)),
       ]);
 
-      if(w){w._lastSave=Date.now();setWork(w);}
-      if(d){d._lastSave=Date.now();setDrive(d);}
+      if(w){setWork(w);}
+      if(d){setDrive(d);}
       setWorkSessions(ws);
       setDriveSessions(ds);
       setNotes(n);
@@ -196,13 +196,15 @@ export default function App(){
     if(perm==="granted"){setNotificationEnabled(true);new Notification("ZeitTracker",{body:"Benachrichtigungen aktiviert ✓"});}
   };
 
+  const hasActiveExtra=extraTrackers.some(et=>!et.paused);
+  const isAnyActive=(!!work&&!work.paused)||(!!drive&&!drive.paused)||hasActiveExtra;
+
   useEffect(()=>{
-    const active=(work&&!work.paused)||(drive&&!drive.paused)||extraTrackers.some(et=>!et.paused);
-    activeRef.current=active;
-    if(active){tickRef.current=setInterval(()=>setNow(Date.now()),1000);}
+    activeRef.current=isAnyActive;
+    if(isAnyActive){tickRef.current=setInterval(()=>setNow(Date.now()),1000);}
     else{clearInterval(tickRef.current);}
     return()=>clearInterval(tickRef.current);
-  },[!!work,work?.paused,!!drive,drive?.paused,extraTrackers]);
+  },[isAnyActive]);
 
   // Wenn App aus Hintergrund zurückkommt: now sofort aktualisieren + Interval neu starten
   useEffect(()=>{
