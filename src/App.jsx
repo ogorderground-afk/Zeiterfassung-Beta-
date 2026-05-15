@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { checkStorageAndWarn, logPageLoad, logCSVExport, rateLimiter } from "./utils/rateLimiter";
+import { db, getSetting, setSetting } from "./db";
+import { migrateFromLocalStorage } from "./utils/migration";
 
 const ARV_WORK  = [{h:5.5,label:"15 Min. Pause"},{h:7,label:"30 Min. Pause"},{h:9,label:"1 Std. Pause"}];
 const ARV_DRIVE = [{h:4.5,label:"45 Min. Pflichtpause (ARV 1)"},{h:9,label:"Tageslimit Lenkzeit"}];
@@ -25,16 +27,6 @@ function getPos(){
 }
 
 function locStr(l){if(!l)return"—";if(typeof l==="string")return l;return`${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`;}
-
-const saveToStorage=(key,data)=>{
-  try{localStorage.setItem(key,JSON.stringify(data));}
-  catch(e){if(e.name==="QuotaExceededError"){rateLimiter.autoCleanupOldSessions();localStorage.setItem(key,JSON.stringify(data));}else{console.error("localStorage Fehler:",e);}}
-};
-
-const loadFromStorage=(key,def=null)=>{
-  try{const v=localStorage.getItem(key);return v?JSON.parse(v):def;}
-  catch(e){console.error("localStorage Parse-Fehler bei",key,e);return def;}
-};
 
 const isPWA=()=>window.matchMedia("(display-mode: standalone)").matches||window.navigator.standalone===true;
 
@@ -97,58 +89,64 @@ export default function App(){
   const [deleteFromDate,setDeleteFromDate]=useState("");
   const [deleteToDate,setDeleteToDate]=useState("");
   const [deleteAll,setDeleteAll]=useState(false);
+  const [appLoading, setAppLoading] = useState(true);
 
   useEffect(()=>{
-    const limitCheck=logPageLoad();
-    if(limitCheck.blocked){setStorageWarning("❌ Zu viele Anfragen.");return;}
-    const quota=checkStorageAndWarn();
-    if(quota.warning){setStorageWarning(quota.warning);}
+    const init=async()=>{
+      await migrateFromLocalStorage();
 
-    const w=loadFromStorage("work");
-    const d=loadFromStorage("drive");
-    const ws=loadFromStorage("workSessions",[]);
-    const ds=loadFromStorage("driveSessions",[]);
-    const n=loadFromStorage("notes",[]);
-    const al=loadFromStorage("actionLog",[]);
-    const gl=loadFromStorage("gpsLog",[]);
-    const gi=loadFromStorage("gpsInterval",10);
-    const r=loadFromStorage("rules",[]);
-    const ne=loadFromStorage("notificationEnabled",true);
-    const de=loadFromStorage("driveExpanded",false);
-    const tr=loadFromStorage("triggeredRules",[]);
+      const quota=await checkStorageAndWarn();
+      if(quota.warning){setStorageWarning(quota.warning);}
 
-    if(w){w._lastSave=Date.now();setWork(w);}
-    if(d){d._lastSave=Date.now();setDrive(d);}
-    setWorkSessions(ws);
-    setDriveSessions(ds);
-    setNotes(n);
-    setActionLog(al);
-    setGpsLog(gl);
-    setGpsInterval(gi);
-    setRules(r);
-    setNotificationEnabled(ne);
-    setDriveExpanded(de);
-    setTriggeredRules(tr);
-    setNow(Date.now());
+      const [ws,ds,n,gi,r,ne,de,tr,w,d]=await Promise.all([
+        db.workSessions.toArray(),
+        db.driveSessions.toArray(),
+        db.notes.orderBy('ts').toArray(),
+        getSetting('gpsInterval',10),
+        getSetting('rules',[]),
+        getSetting('notificationEnabled',true),
+        getSetting('driveExpanded',false),
+        getSetting('triggeredRules',[]),
+        getSetting('work',null),
+        getSetting('drive',null),
+      ]);
+      const [al,gl]=await Promise.all([
+        db.actionLog.orderBy('ts').toArray().then(items=>items.map(({id,...rest})=>rest)),
+        db.gpsLog.orderBy('ts').toArray().then(items=>items.map(({id,...rest})=>rest)),
+      ]);
 
-    if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(err=>console.log("SW registration failed:",err));}
+      if(w){w._lastSave=Date.now();setWork(w);}
+      if(d){d._lastSave=Date.now();setDrive(d);}
+      setWorkSessions(ws);
+      setDriveSessions(ds);
+      setNotes(n);
+      setActionLog(al);
+      setGpsLog(gl);
+      setGpsInterval(gi);
+      setRules(r);
+      setNotificationEnabled(ne);
+      setDriveExpanded(de);
+      setTriggeredRules(tr);
+      setNow(Date.now());
+      setAppLoading(false);
+
+      if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(err=>console.log("SW registration failed:",err));}
+    };
+    init();
   },[]);
 
-  useEffect(()=>{if(work){const toSave={...work,_lastSave:Date.now()};saveToStorage("work",toSave);}else{localStorage.removeItem("work");}}, [work]);
-  useEffect(()=>{if(drive){const toSave={...drive,_lastSave:Date.now()};saveToStorage("drive",toSave);}else{localStorage.removeItem("drive");}}, [drive]);
-  useEffect(()=>saveToStorage("workSessions",workSessions),[workSessions]);
-  useEffect(()=>saveToStorage("driveSessions",driveSessions),[driveSessions]);
-  useEffect(()=>saveToStorage("notes",notes),[notes]);
-  useEffect(()=>saveToStorage("actionLog",actionLog),[actionLog]);
-  useEffect(()=>saveToStorage("gpsLog",gpsLog),[gpsLog]);
-  useEffect(()=>saveToStorage("gpsInterval",gpsInterval),[gpsInterval]);
-  useEffect(()=>saveToStorage("rules",rules),[rules]);
-  useEffect(()=>saveToStorage("notificationEnabled",notificationEnabled),[notificationEnabled]);
-  useEffect(()=>saveToStorage("driveExpanded",driveExpanded),[driveExpanded]);
-  useEffect(()=>saveToStorage("triggeredRules",triggeredRules),[triggeredRules]);
+  useEffect(()=>{if(work){setSetting('work',{...work,_lastSave:Date.now()});}else{db.settings.delete('work');}},[work]);
+  useEffect(()=>{if(drive){setSetting('drive',{...drive,_lastSave:Date.now()});}else{db.settings.delete('drive');}},[drive]);
+  useEffect(()=>{setSetting('gpsInterval',gpsInterval);},[gpsInterval]);
+  useEffect(()=>{setSetting('rules',rules);},[rules]);
+  useEffect(()=>{setSetting('notificationEnabled',notificationEnabled);},[notificationEnabled]);
+  useEffect(()=>{setSetting('driveExpanded',driveExpanded);},[driveExpanded]);
+  useEffect(()=>{setSetting('triggeredRules',triggeredRules);},[triggeredRules]);
 
   const logA=useCallback((action,detail="",loc=null)=>{
-    setActionLog(p=>[...p,{ts:Date.now(),action,detail,loc}]);
+    const entry={ts:Date.now(),action,detail,loc};
+    db.actionLog.add(entry);
+    setActionLog(p=>[...p,entry]);
   },[]);
 
   const sendNotification=(title,options={})=>{
@@ -176,6 +174,7 @@ export default function App(){
       const p=await getPos();
       setCurLoc(p);
       const gpsEntry={ts:Date.now(),...p,context:{session_type:drive?"Fahrt":"Arbeit",session_start:drive?.start||work?.start,activity:work?.taetigkeit||"",rule_applied:selectedRule}};
+      db.gpsLog.add(gpsEntry);
       setGpsLog(g=>[...g,gpsEntry]);
       logA("GPS",locStr(p),p);
     }catch(err){console.log("GPS-Fehler:",err.message);}
@@ -258,7 +257,9 @@ export default function App(){
       d={...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)};
     }
     const net=calcNet({...d,end:ts},ts),pm=calcPMs({...d,end:ts},ts);
-    setDriveSessions(p=>[...p,{...d,end:ts,netMs:net,pauseMs:pm,location:curLoc}]);
+    const newDriveSession={...d,end:ts,netMs:net,pauseMs:pm,location:curLoc};
+    db.driveSessions.put(newDriveSession);
+    setDriveSessions(p=>[...p,newDriveSession]);
     logA("FAHRT_ENDE",`${toH(net).toFixed(2)}h`,curLoc);
     setDrive(null);setShowDriveDot(true);
   };
@@ -268,12 +269,16 @@ export default function App(){
     if(drive){
       let d=drive;
       if(d.paused)d={...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)};
-      setDriveSessions(p=>[...p,{...d,end:ts,netMs:calcNet({...d,end:ts},ts),pauseMs:calcPMs({...d,end:ts},ts),location:curLoc}]);
+      const finDrive={...d,end:ts,netMs:calcNet({...d,end:ts},ts),pauseMs:calcPMs({...d,end:ts},ts),location:curLoc};
+      db.driveSessions.put(finDrive);
+      setDriveSessions(p=>[...p,finDrive]);
       setDrive(null);setShowDriveDot(true);
     }
     let w=work;
     if(w.paused)w={...w,paused:false,pauses:w.pauses.map((p,i)=>i===w.pauses.length-1?{...p,end:ts}:p)};
-    setWorkSessions(p=>[...p,{...w,end:ts,netMs:calcNet({...w,end:ts},ts),pauseMs:calcPMs({...w,end:ts},ts),location:curLoc,stars,comment}]);
+    const finWork={...w,end:ts,netMs:calcNet({...w,end:ts},ts),pauseMs:calcPMs({...w,end:ts},ts),location:curLoc,stars,comment};
+    db.workSessions.put(finWork);
+    setWorkSessions(p=>[...p,finWork]);
     logA("AUSSTEMPELN",`★${stars}${comment?" | "+comment:""}`,curLoc);
     setWork(null);setShowWorkDot(true);
     setTriggeredRules([]);
@@ -284,7 +289,9 @@ export default function App(){
 
   const saveInlineNote=()=>{
     if(!inlineNoteText.trim())return;
-    setNotes(n=>[...n,{id:Date.now(),text:inlineNoteText.trim(),ts:Date.now(),loc:curLoc,images:[]}]);
+    const note={id:Date.now(),text:inlineNoteText.trim(),ts:Date.now(),loc:curLoc,images:[]};
+    db.notes.put(note);
+    setNotes(n=>[...n,note]);
     logA("NOTIZ",inlineNoteText.trim().slice(0,60),curLoc);
     setInlineNoteText("");setShowInlineNote(false);
   };
@@ -367,6 +374,11 @@ export default function App(){
     setDriveSessions(ds=>ds.filter(s=>!(s.start>=from&&s.start<to)));
     setNotes(ns=>ns.filter(n=>!(n.ts>=from&&n.ts<to)));
     setActionLog(al=>al.filter(a=>!(a.ts>=from&&a.ts<to)));
+    db.workSessions.where('start').between(from,to,true,false).delete();
+    db.driveSessions.where('start').between(from,to,true,false).delete();
+    db.notes.where('ts').between(from,to,true,false).delete();
+    db.actionLog.where('ts').between(from,to,true,false).delete();
+    db.gpsLog.where('ts').between(from,to,true,false).delete();
     logA("DATEN_GELÖSCHT",`${fromStr||"Anfang"} bis ${toStr||"Heute"}`,null);
     setDeleteModal(false);
     setDeleteConfirm(false);
@@ -396,6 +408,7 @@ export default function App(){
 
   return(
     <div style={{fontFamily:"system-ui,-apple-system,sans-serif",background:t.bg,minHeight:"100vh",color:t.text}}>
+      {appLoading&&<div style={{position:"fixed",inset:0,background:"#0f1117",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999,color:"#94a3b8",fontSize:14}}>Laden…</div>}
       <style>{`@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}.dp{animation:dp 2s ease-in-out infinite}.dpf{animation:dp 1.4s ease-in-out infinite}body{margin:0;padding:0}`}</style>
 
       {!isPWA()&&(
@@ -537,7 +550,7 @@ export default function App(){
                 </div>}
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,color:t.hint}}>
                   <span>{fmtDate(n.ts)} {fmtTime(n.ts)}{n.images&&n.images.length>0&&` · ${n.images.length} Bilder`}</span>
-                  <button onClick={()=>setNotes(ns=>ns.filter(x=>x.id!==n.id))} style={{border:"none",background:"none",color:"#ef4444",cursor:"pointer"}}>✕</button>
+                  <button onClick={()=>{setNotes(ns=>ns.filter(x=>x.id!==n.id));db.notes.delete(n.id);}} style={{border:"none",background:"none",color:"#ef4444",cursor:"pointer"}}>✕</button>
                 </div>
               </div>
             ))}

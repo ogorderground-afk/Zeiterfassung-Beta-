@@ -84,66 +84,32 @@ class RateLimiter {
     return { blocked: false, warnings };
   }
 
-  checkStorageQuota() {
-    try {
-      const testKey = '_storageTest_' + Date.now();
-      const testData = 'x'.repeat(1024 * 1024);
-      localStorage.setItem(testKey, testData);
-      localStorage.removeItem(testKey);
-
-      let estimatedMB = 0;
-      for (let key in localStorage) {
-        if (localStorage.hasOwnProperty(key)) {
-          estimatedMB += (localStorage[key].length / 1024 / 1024);
+  async checkStorageQuota() {
+    if (navigator.storage && navigator.storage.estimate) {
+      try {
+        const est = await navigator.storage.estimate();
+        const usedMB = (est.usage || 0) / 1024 / 1024;
+        const quotaMB = (est.quota || 0) / 1024 / 1024;
+        if (quotaMB > 0 && usedMB / quotaMB > 0.8) {
+          return { warning: `⚠️ Speicher fast voll: ${usedMB.toFixed(0)}MB / ${quotaMB.toFixed(0)}MB`, blocked: false };
         }
-      }
-
-      if (estimatedMB > RATE_LIMIT_CONFIG.STORAGE_QUOTA_MB) {
-        return {
-          warning: `⚠️ Speicher fast voll: ${estimatedMB.toFixed(2)}MB / ${RATE_LIMIT_CONFIG.STORAGE_QUOTA_MB}MB`,
-          blocked: false,
-        };
-      }
-
-      return { warning: null, blocked: false, usedMB: estimatedMB };
-    } catch (e) {
-      if (e.name === 'QuotaExceededError') {
-        return {
-          warning: '❌ Speicher voll! Alte Daten löschen.',
-          blocked: true,
-          reason: 'Storage quota exceeded',
-        };
-      }
-      return { warning: null, blocked: false };
+        return { warning: null, blocked: false, usedMB };
+      } catch { return { warning: null, blocked: false }; }
     }
+    return { warning: null, blocked: false };
   }
 
   autoCleanupOldSessions() {
-    const sessions = JSON.parse(localStorage.getItem('workSessions') || '[]');
-    const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
-
-    const filtered = sessions.filter(s => s.start > thirtyDaysAgo);
-    const deleted = sessions.length - filtered.length;
-
-    if (deleted > 0) {
-      localStorage.setItem('workSessions', JSON.stringify(filtered));
-      console.log(`🧹 ${deleted} alte Sessions gelöscht (>30 Tage)`);
-    }
-
-    return deleted;
+    // handled by IndexedDB; localStorage no longer used for sessions
+    return 0;
   }
 }
 
 export const rateLimiter = new RateLimiter();
 
-export function checkStorageAndWarn() {
-  const quota = rateLimiter.checkStorageQuota();
-  if (quota.warning) {
-    console.warn(quota.warning);
-  }
-  if (quota.blocked) {
-    rateLimiter.autoCleanupOldSessions();
-  }
+export async function checkStorageAndWarn() {
+  const quota = await rateLimiter.checkStorageQuota();
+  if (quota.warning) { console.warn(quota.warning); }
   return quota;
 }
 
