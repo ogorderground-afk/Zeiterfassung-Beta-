@@ -56,7 +56,10 @@ export default function App(){
   const [rules,setRules]=useState([]);
   const [newRuleHours,setNewRuleHours]=useState(1);
   const [newRuleMinutes,setNewRuleMinutes]=useState(0);
+  const [newRuleName,setNewRuleName]=useState("");
   const [newRuleText,setNewRuleText]=useState("");
+  const [exportChoiceModal,setExportChoiceModal]=useState(false);
+  const [pendingCsv,setPendingCsv]=useState(null);
 
   const [confirmStop,setConfirmStop]=useState(false);
   const [ratingModal,setRatingModal]=useState(false);
@@ -170,9 +173,17 @@ export default function App(){
     setActionLog(p=>[...p,entry]);
   },[]);
 
-  const sendNotification=(title,options={})=>{
+  const sendNotification=async(title,body="")=>{
     if(!notificationEnabled||!("Notification" in window)||Notification.permission!=="granted") return;
-    new Notification(title,{...options,icon:"/manifest.json"});
+    // Service Worker showNotification funktioniert auch wenn App im Hintergrund
+    if("serviceWorker" in navigator){
+      try{
+        const reg=await navigator.serviceWorker.ready;
+        await reg.showNotification(title,{body,icon:"/manifest.json",badge:"/manifest.json"});
+        return;
+      }catch{}
+    }
+    new Notification(title,{body});
   };
 
   const toggleNotifications=async()=>{
@@ -390,11 +401,14 @@ export default function App(){
 
   const createRule=()=>{
     if(!newRuleText.trim()) return;
-    const newRule={id:Date.now(),text:newRuleText,hours:newRuleHours,minutes:newRuleMinutes};
+    const newRule={id:Date.now(),name:newRuleName.trim()||newRuleText.trim(),text:newRuleText,hours:newRuleHours,minutes:newRuleMinutes};
     setRules(r=>[...r,newRule]);
-    setNewRuleText("");
-    setNewRuleHours(1);
-    setNewRuleMinutes(0);
+    setNewRuleName("");setNewRuleText("");setNewRuleHours(1);setNewRuleMinutes(0);
+    setRuleManagerOpen(false);
+  };
+
+  const toggleCollapseTracker=(id)=>{
+    setExtraTrackers(ets=>ets.map(et=>et.id===id?{...et,collapsed:!et.collapsed}:et));
   };
 
   const deleteRule=(ruleId)=>{
@@ -402,43 +416,52 @@ export default function App(){
     if(selectedRule===ruleId) setSelectedRule("standard");
   };
 
-  const exportCSV=(fromStr,toStr)=>{
-    const exportLimit=logCSVExport();
-    if(exportLimit.blocked){alert("Zu viele CSV-Exporte!");return;}
-
+  const buildCsvContent=(fromStr,toStr)=>{
     const from=fromStr?new Date(fromStr).getTime():0;
     const to=toStr?new Date(toStr).getTime()+86400000:Date.now();
-
     const filteredWorks=workSessions.filter(s=>s.start>=from&&s.start<to);
     const filteredDrives=driveSessions.filter(s=>s.start>=from&&s.start<to);
     const filteredNotes=notes.filter(n=>n.ts>=from&&n.ts<to&&(!n.images||n.images.length===0));
     const filteredGps=gpsLog.filter(g=>g.ts>=from&&g.ts<to);
-
     const hdr="type,datum,start_time,end_time,netto_hours,pause_minutes,activity,rating,location_lat,location_lng,location_accuracy,gps_count,comment,rule_type,altitude,speed";
-    
     const rows=[
-      ...filteredWorks.map(s=>{
-        const locData=s.location?`"${s.location.lat}","${s.location.lng}","${s.location.acc}"`:'"","",""';
-        const gpsForSession=filteredGps.filter(g=>g.ts>=s.start&&g.ts<=(s.end||now)).length;
-        return `"Arbeit","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${Math.round(s.pauseMs/60000)}","${s.taetigkeit||""}","${s.stars||0}",${locData},"${gpsForSession}","${s.comment||""}","${s.ruleType||"standard"}","",""`;
+      ...filteredWorks.map(s=>{const locData=s.location?`"${s.location.lat}","${s.location.lng}","${s.location.acc}"`:'"","",""';const gpsN=filteredGps.filter(g=>g.ts>=s.start&&g.ts<=(s.end||now)).length;return `"Arbeit","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${Math.round(s.pauseMs/60000)}","${s.taetigkeit||""}","${s.stars||0}",${locData},"${gpsN}","${s.comment||""}","${s.ruleType||"standard"}","",""`;
       }),
-      ...filteredDrives.map(s=>{
-        const locData=s.location?`"${s.location.lat}","${s.location.lng}","${s.location.acc}"`:'"","",""';
-        const gpsForSession=filteredGps.filter(g=>g.ts>=s.start&&g.ts<=(s.end||now)).length;
-        return `"Fahrt","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${Math.round(s.pauseMs/60000)}","","","",${locData},"${gpsForSession}",""`;
+      ...filteredDrives.map(s=>{const locData=s.location?`"${s.location.lat}","${s.location.lng}","${s.location.acc}"`:'"","",""';const gpsN=filteredGps.filter(g=>g.ts>=s.start&&g.ts<=(s.end||now)).length;return `"Fahrt","${fmtDate(s.start)}","${fmtTime(s.start)}","${fmtTime(s.end)}","${toH(s.netMs).toFixed(3)}","${Math.round(s.pauseMs/60000)}","","","",${locData},"${gpsN}",""`;
       }),
-      ...filteredNotes.map(n=>{
-        const locData=n.loc?`"${n.loc.lat}","${n.loc.lng}","${n.loc.acc}"`:'"","",""';
-        return `"Notiz","${fmtDate(n.ts)}","${fmtTime(n.ts)}","","","","${n.text.replace(/"/g,'""')}","",${locData},"0",""`;
+      ...filteredNotes.map(n=>{const locData=n.loc?`"${n.loc.lat}","${n.loc.lng}","${n.loc.acc}"`:'"","",""';return `"Notiz","${fmtDate(n.ts)}","${fmtTime(n.ts)}","","","","${n.text.replace(/"/g,'""')}","",${locData},"0",""`;
       }),
       ...filteredGps.map(g=>`"GPS","${fmtDate(g.ts)}","${fmtTime(g.ts)}","","","","","","${g.lat}","${g.lng}","${g.acc}","1","","${g.context?.rule_applied||""}","${g.altitude||""}","${g.speed||""}"`)
     ];
+    return{content:[hdr,...rows].join("\n"),filename:`zeiterfassung_${fromStr||"alle"}_bis_${toStr||"heute"}.csv`};
+  };
 
-    const blob=new Blob([[hdr,...rows].join("\n")],{type:"text/csv;charset=utf-8;"});
-    Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:`zeiterfassung_${fromStr||"alle"}_bis_${toStr||"heute"}.csv`}).click();
+  const openExportChoice=(fromStr,toStr)=>{
+    const exportLimit=logCSVExport();
+    if(exportLimit.blocked){alert("Zu viele CSV-Exporte!");return;}
+    const csv=buildCsvContent(fromStr,toStr);
+    setPendingCsv(csv);
     setExportModal(false);
-    setExportFromDate("");
-    setExportToDate("");
+    setExportChoiceModal(true);
+  };
+
+  const downloadCsv=()=>{
+    if(!pendingCsv) return;
+    const blob=new Blob([pendingCsv.content],{type:"text/csv;charset=utf-8;"});
+    Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:pendingCsv.filename}).click();
+    setExportChoiceModal(false);setPendingCsv(null);setExportFromDate("");setExportToDate("");
+  };
+
+  const shareViaMail=async()=>{
+    if(!pendingCsv) return;
+    const file=new File([pendingCsv.content],pendingCsv.filename,{type:"text/csv"});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      try{await navigator.share({title:"Zeiterfassung Export",files:[file]});setExportChoiceModal(false);setPendingCsv(null);setExportFromDate("");setExportToDate("");return;}
+      catch(e){if(e.name==="AbortError") return;}
+    }
+    // Fallback: mailto ohne Anhang (Browser-Einschränkung)
+    window.location.href=`mailto:?subject=Zeiterfassung%20Export&body=Anhang%3A%20${encodeURIComponent(pendingCsv.filename)}%0A%0ABitte%20Datei%20manuell%20aus%20dem%20Download-Ordner%20anh%C3%A4ngen.`;
+    downloadCsv();
   };
 
   const deleteData=(fromStr,toStr)=>{
@@ -505,8 +528,9 @@ export default function App(){
 
       <div style={{padding:"18px 18px 90px",maxWidth:660,margin:"0 auto"}}>
 
-        <div style={{textAlign:"center",padding:"24px 0 8px"}}>
+        <div style={{textAlign:"center",padding:"24px 0 8px",display:"flex",alignItems:"center",justifyContent:"center",gap:12}}>
           <span className="banana">🍌</span>
+          <span style={{fontSize:18,fontWeight:600,color:t.muted,letterSpacing:"0.02em"}}>Banana Version</span>
         </div>
 
         {view==="tracker"&&(
@@ -530,8 +554,9 @@ export default function App(){
                   </div>
                 </>
               ):(
-                <div style={{paddingTop:14}}>
+                <div style={{paddingTop:14,display:"flex",flexDirection:"column",gap:10}}>
                   <button onClick={()=>{setTaetigkeitModal(true);setTaetigkeitInput("");}} style={{width:"100%",padding:"13px",background:"#6366f1",border:"none",borderRadius:10,color:"white",fontSize:15,fontWeight:500,cursor:"pointer"}}>▶ Einstempeln</button>
+                  <button onClick={()=>setRuleManagerOpen(true)} style={{width:"100%",padding:"13px",background:"transparent",border:`1.5px solid ${t.border}`,borderRadius:10,color:t.muted,fontSize:14,fontWeight:500,cursor:"pointer"}}>⚙ Regel erstellen</button>
                 </div>
               )}
             </div>
@@ -570,7 +595,7 @@ export default function App(){
                       <div style={{display:"flex",gap:8,marginTop:4}}>
                         <button onClick={handleDrivePause} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`)}>{drive.paused?"▶":"⏸"}</button>
                         <button onClick={stopDrive} style={Btn("#3b82f614","#3b82f6","0.5px solid #3b82f640")}>⏹ Ende</button>
-                        <button onClick={()=>setDriveExpanded(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>⬇ Einklappen</button>
+                        <button onClick={()=>setDriveExpanded(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>▲ Einklappen</button>
                       </div>
                     </>
                   ):(
@@ -588,18 +613,24 @@ export default function App(){
                   const etNet=calcNet(et,now),etPMs=calcPMs(et,now);
                   return(
                     <div key={et.id} style={{...C(et.color+"60"),marginBottom:8}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                        <span style={{fontSize:11,fontWeight:500,color:et.color,textTransform:"uppercase",letterSpacing:"0.07em"}}>{et.label}</span>
-                        {!et.paused&&<div style={{width:8,height:8,borderRadius:"50%",background:et.color,animation:"dp 2s ease-in-out infinite"}}/>}
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",marginBottom:et.collapsed?0:10}} onClick={()=>toggleCollapseTracker(et.id)}>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          {!et.paused&&!et.collapsed&&<div style={{width:7,height:7,borderRadius:"50%",background:et.color,animation:"dp 2s ease-in-out infinite"}}/>}
+                          <span style={{fontSize:11,fontWeight:500,color:et.color,textTransform:"uppercase",letterSpacing:"0.07em"}}>{et.label}</span>
+                          {et.collapsed&&<span style={{fontSize:13,fontVariantNumeric:"tabular-nums",color:et.color,fontWeight:500}}>{fmtMs(etNet)}</span>}
+                        </div>
+                        <span style={{fontSize:13,color:t.hint}}>{et.collapsed?"▼":"▲"}</span>
                       </div>
-                      <div style={{textAlign:"center",padding:"4px 0 10px"}}>
-                        <div style={{fontSize:44,fontWeight:400,fontVariantNumeric:"tabular-nums",color:et.color,lineHeight:1}}>{fmtMs(etNet)}</div>
-                        {etPMs>0&&<div style={{fontSize:11,color:t.hint,marginTop:4}}>Pausen {fmtMs(etPMs)}</div>}
-                      </div>
-                      <div style={{display:"flex",gap:8}}>
-                        <button onClick={()=>pauseExtraTracker(et.id)} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`)}>{et.paused?"▶ Weiter":"⏸ Pause"}</button>
-                        <button onClick={()=>stopExtraTracker(et.id)} style={Btn("#ef444414","#ef4444","0.5px solid #ef444440")}>⏹ Stop</button>
-                      </div>
+                      {!et.collapsed&&<>
+                        <div style={{textAlign:"center",padding:"4px 0 10px"}}>
+                          <div style={{fontSize:44,fontWeight:400,fontVariantNumeric:"tabular-nums",color:et.color,lineHeight:1}}>{fmtMs(etNet)}</div>
+                          {etPMs>0&&<div style={{fontSize:11,color:t.hint,marginTop:4}}>Pausen {fmtMs(etPMs)}</div>}
+                        </div>
+                        <div style={{display:"flex",gap:8}}>
+                          <button onClick={e=>{e.stopPropagation();pauseExtraTracker(et.id);}} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`)}>{et.paused?"▶ Weiter":"⏸ Pause"}</button>
+                          <button onClick={e=>{e.stopPropagation();stopExtraTracker(et.id);}} style={Btn("#ef444414","#ef4444","0.5px solid #ef444440")}>⏹ Stop</button>
+                        </div>
+                      </>}
                     </div>
                   );
                 })}
@@ -733,17 +764,23 @@ export default function App(){
             <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Regeln verwalten</div>
             <div style={{marginBottom:16,padding:12,background:t.s2,borderRadius:8}}>
               <div style={{fontSize:12,color:t.hint,marginBottom:8}}>Neue Regel</div>
-              <div style={{display:"flex",gap:8,marginBottom:8}}>
-                <input type="number" value={newRuleHours} onChange={e=>setNewRuleHours(Math.max(0,parseInt(e.target.value)||0))} placeholder="Std" min="0" style={{width:"50px",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text}}/>
-                <span>:</span>
-                <input type="number" value={newRuleMinutes} onChange={e=>setNewRuleMinutes(Math.min(59,Math.max(0,parseInt(e.target.value)||0)))} placeholder="Min" min="0" max="59" style={{width:"50px",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text}}/>
+              <input autoFocus type="text" value={newRuleName} onChange={e=>setNewRuleName(e.target.value)} placeholder="Name der Regel (z.B. Mittagspause)" style={{width:"100%",padding:"9px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text,boxSizing:"border-box",marginBottom:8}}/>
+              <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
+                <span style={{fontSize:12,color:t.hint,whiteSpace:"nowrap"}}>Nach</span>
+                <input type="number" value={newRuleHours} onChange={e=>setNewRuleHours(Math.max(0,parseInt(e.target.value)||0))} placeholder="Std" min="0" style={{width:"55px",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text}}/>
+                <span style={{color:t.hint}}>h</span>
+                <input type="number" value={newRuleMinutes} onChange={e=>setNewRuleMinutes(Math.min(59,Math.max(0,parseInt(e.target.value)||0)))} placeholder="Min" min="0" max="59" style={{width:"55px",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text}}/>
+                <span style={{fontSize:12,color:t.hint}}>min</span>
               </div>
-              <input type="text" value={newRuleText} onChange={e=>setNewRuleText(e.target.value)} placeholder="Meldungstext" style={{width:"100%",padding:"8px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text,boxSizing:"border-box",marginBottom:8}}/>
-              <button onClick={createRule} disabled={!newRuleText.trim()} style={{width:"100%",padding:"8px",background:newRuleText.trim()?"#6366f1":"#6366f140",border:"none",borderRadius:6,color:"white",fontSize:12,cursor:"pointer"}}>+ Hinzufügen</button>
+              <input type="text" value={newRuleText} onChange={e=>setNewRuleText(e.target.value)} placeholder="Push-Benachrichtigung Text" style={{width:"100%",padding:"9px",background:t.bg,border:`0.5px solid ${t.border}`,borderRadius:6,color:t.text,boxSizing:"border-box",marginBottom:8}}/>
+              <button onClick={createRule} disabled={!newRuleText.trim()} style={{width:"100%",padding:"10px",background:newRuleText.trim()?"#6366f1":"#6366f140",border:"none",borderRadius:6,color:"white",fontSize:13,fontWeight:500,cursor:"pointer"}}>+ Regel erstellen</button>
             </div>
             {rules.map(r=>(
               <div key={r.id} style={{padding:10,background:t.s2,borderRadius:8,display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,fontSize:12}}>
-                <div><div style={{fontWeight:500}}>{r.text}</div><div style={{color:t.hint}}>{pad(r.hours)}:{pad(r.minutes)}</div></div>
+                <div>
+                  <div style={{fontWeight:500}}>{r.name||r.text}</div>
+                  <div style={{color:t.hint,marginTop:2}}>{pad(r.hours)}h {pad(r.minutes)}min · {r.text}</div>
+                </div>
                 <button onClick={()=>deleteRule(r.id)} style={{padding:"4px 8px",background:"#ef444414",border:"none",borderRadius:6,color:"#ef4444",fontSize:11,cursor:"pointer"}}>Löschen</button>
               </div>
             ))}
@@ -820,7 +857,7 @@ export default function App(){
             <input type="date" value={exportToDate} onChange={e=>setExportToDate(e.target.value)} style={{width:"100%",padding:"10px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,color:t.text,marginBottom:12,boxSizing:"border-box"}}/>
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>setExportModal(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
-              <button onClick={()=>exportCSV(exportFromDate,exportToDate)} style={Btn("#6366f1","white")}>↓ Exportieren</button>
+              <button onClick={()=>openExportChoice(exportFromDate,exportToDate)} style={Btn("#6366f1","white")}>↓ Weiter</button>
             </div>
           </div>
         </div>
@@ -855,6 +892,26 @@ export default function App(){
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {exportChoiceModal&&pendingCsv&&(
+        <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box"}}>
+            <div style={{fontWeight:500,fontSize:15,marginBottom:6}}>Export: {pendingCsv.filename}</div>
+            <div style={{fontSize:12,color:t.hint,marginBottom:18}}>Wie möchtest du die Datei exportieren?</div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <button onClick={downloadCsv} style={{width:"100%",padding:"14px",background:"#6366f114",border:"0.5px solid #6366f140",borderRadius:10,color:"#6366f1",fontSize:14,fontWeight:500,cursor:"pointer",textAlign:"left"}}>
+                ⬇ Herunterladen
+                <div style={{fontSize:11,color:t.hint,marginTop:2,fontWeight:400}}>CSV-Datei direkt auf das Gerät speichern</div>
+              </button>
+              <button onClick={shareViaMail} style={{width:"100%",padding:"14px",background:"#22c55e14",border:"0.5px solid #22c55e40",borderRadius:10,color:"#22c55e",fontSize:14,fontWeight:500,cursor:"pointer",textAlign:"left"}}>
+                ✉ Per Mail senden
+                <div style={{fontSize:11,color:t.hint,marginTop:2,fontWeight:400}}>Mail-App öffnen mit CSV-Datei im Anhang</div>
+              </button>
+              <button onClick={()=>{setExportChoiceModal(false);setPendingCsv(null);}} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
+            </div>
           </div>
         </div>
       )}
