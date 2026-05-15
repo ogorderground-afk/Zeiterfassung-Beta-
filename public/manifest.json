@@ -12,25 +12,17 @@
   "prefer_related_applications": false,
   "icons": [
     {
-      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%236366f1' width='192' height='192'/><text x='50%' y='50%' font-size='120' font-weight='bold' fill='white' text-anchor='middle' dominant-baseline='middle'>⏱</text></svg>",
-      "sizes": "192x192",
+      "src": "/icon.svg",
+      "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
     },
     {
-      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%236366f1' width='192' height='192'/><text x='50%' y='50%' font-size='120' font-weight='bold' fill='white' text-anchor='middle' dominant-baseline='middle'>⏱</text></svg>",
-      "sizes": "512x512",
+      "src": "/icon.svg",
+      "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "maskable"
     }
   ],
-  "categories": ["productivity", "business"],
-  "screenshots": [
-    {
-      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 540 720'><rect fill='%230f1117' width='540' height='720'/></svg>",
-      "sizes": "540x720",
-      "type": "image/svg+xml",
-      "form_factor": "narrow"
-    }
-  ]
+  "categories": ["productivity", "business"]
 }
