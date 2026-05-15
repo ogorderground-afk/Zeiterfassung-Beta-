@@ -145,8 +145,6 @@ export default function App(){
       setCustomSessions(cs);
       setNow(Date.now());
       setAppLoading(false);
-
-      if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(err=>console.log("SW registration failed:",err));}
     };
     init();
 

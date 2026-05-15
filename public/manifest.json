@@ -2,6 +2,7 @@
   "name": "ZeitTracker - Arbeitszeiterfassung",
   "short_name": "ZeitTracker",
   "description": "Professionelle Arbeitszeiterfassung mit GPS-Tracking und Pausen",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
