@@ -562,7 +562,7 @@ export default function App(){
           <>
             <div style={{textAlign:"center",padding:"24px 0 16px",display:"flex",alignItems:"center",justifyContent:"center",gap:12}}>
               <span className="banana">🍌</span>
-              <span style={{fontSize:18,fontWeight:600,color:t.muted,letterSpacing:"0.02em"}}>Banana Version</span>
+              <span style={{fontSize:18,fontWeight:600,color:t.muted,letterSpacing:"0.02em"}}>Banana Version 3</span>
             </div>
 
             <div style={C()}>
