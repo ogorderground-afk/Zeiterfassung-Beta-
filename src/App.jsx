@@ -12,6 +12,8 @@ function fmtTime(ts){return new Date(ts).toLocaleTimeString("de-CH",{hour:"2-dig
 function fmtDate(ts){return new Date(ts).toLocaleDateString("de-CH");}
 function fmtFull(ts){return new Date(ts).toLocaleString("de-CH",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});}
 function toH(ms){return ms/3600000;}
+function toDatetimeLocal(ts){const d=new Date(ts);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16);}
+const EXTRA_COLORS=["#8b5cf6","#ec4899","#14b8a6","#f59e0b","#84cc16"];
 function calcNet(s,now){if(!s)return 0;const pm=s.pauses.reduce((a,p)=>a+((p.end||now)-p.start),0);return Math.max(0,(s.end||now)-s.start-pm);}
 function calcPMs(s,now){if(!s)return 0;return s.pauses.reduce((a,p)=>a+((p.end||now)-p.start),0);}
 
@@ -32,7 +34,6 @@ const isPWA=()=>window.matchMedia("(display-mode: standalone)").matches||window.
 
 export default function App(){
   const [dark,setDark]=useState(true);
-  const [transparent,setTransparent]=useState(false);
   const [view,setView]=useState("tracker");
   const [storageWarning,setStorageWarning]=useState(null);
   const [gpsInterval,setGpsInterval]=useState(10);
@@ -67,8 +68,18 @@ export default function App(){
   const [editNoteText,setEditNoteText]=useState("");
   const [showInlineNote,setShowInlineNote]=useState(false);
   const [inlineNoteText,setInlineNoteText]=useState("");
-  const [cameraOpen,setCameraOpen]=useState(false);
-  const cameraRef=useRef(null);
+
+  const [editSession,setEditSession]=useState(null);
+  const [editStart,setEditStart]=useState("");
+  const [editEnd,setEditEnd]=useState("");
+  const [editTaetigkeit,setEditTaetigkeit]=useState("");
+  const [editStars,setEditStars]=useState(0);
+
+  const [extraTrackers,setExtraTrackers]=useState([]);
+  const [customSessions,setCustomSessions]=useState([]);
+  const [extraTrackerModal,setExtraTrackerModal]=useState(false);
+  const [extraTrackerInput,setExtraTrackerInput]=useState("");
+  const [extraTrackerRule,setExtraTrackerRule]=useState("standard");
 
   const [actionLog,setActionLog]=useState([]);
   const [curLoc,setCurLoc]=useState(null);
@@ -99,17 +110,19 @@ export default function App(){
       const quota=await checkStorageAndWarn();
       if(quota.warning){setStorageWarning(quota.warning);}
 
-      const [ws,ds,n,gi,r,ne,de,tr,w,d]=await Promise.all([
+      const [ws,ds,n,gi,r,ne,de,tr,w,d,et,cs]=await Promise.all([
         db.workSessions.toArray(),
         db.driveSessions.toArray(),
         db.notes.orderBy('ts').toArray(),
         getSetting('gpsInterval',10),
         getSetting('rules',[]),
-        getSetting('notificationEnabled',true),
+        getSetting('notificationEnabled',false),
         getSetting('driveExpanded',false),
         getSetting('triggeredRules',[]),
         getSetting('work',null),
         getSetting('drive',null),
+        getSetting('extraTrackers',[]),
+        getSetting('customSessions',[]),
       ]);
       const [al,gl]=await Promise.all([
         db.actionLog.orderBy('ts').toArray().then(items=>items.map(({id,...rest})=>rest)),
@@ -128,6 +141,8 @@ export default function App(){
       setNotificationEnabled(ne);
       setDriveExpanded(de);
       setTriggeredRules(tr);
+      setExtraTrackers(et);
+      setCustomSessions(cs);
       setNow(Date.now());
       setAppLoading(false);
 
@@ -148,6 +163,8 @@ export default function App(){
   useEffect(()=>{setSetting('notificationEnabled',notificationEnabled);},[notificationEnabled]);
   useEffect(()=>{setSetting('driveExpanded',driveExpanded);},[driveExpanded]);
   useEffect(()=>{setSetting('triggeredRules',triggeredRules);},[triggeredRules]);
+  useEffect(()=>{setSetting('extraTrackers',extraTrackers);},[extraTrackers]);
+  useEffect(()=>{setSetting('customSessions',customSessions);},[customSessions]);
 
   const logA=useCallback((action,detail="",loc=null)=>{
     const entry={ts:Date.now(),action,detail,loc};
@@ -156,24 +173,25 @@ export default function App(){
   },[]);
 
   const sendNotification=(title,options={})=>{
-    if(!notificationEnabled||!("Notification" in window)) return;
-    if(Notification.permission==="granted"){
-      new Notification(title,options);
-    }else if(Notification.permission!=="denied"){
-      Notification.requestPermission().then(permission=>{
-        if(permission==="granted"){
-          new Notification(title,options);
-        }
-      });
-    }
+    if(!notificationEnabled||!("Notification" in window)||Notification.permission!=="granted") return;
+    new Notification(title,{...options,icon:"/manifest.json"});
+  };
+
+  const toggleNotifications=async()=>{
+    if(notificationEnabled){setNotificationEnabled(false);return;}
+    if(!("Notification" in window)) return;
+    if(Notification.permission==="granted"){setNotificationEnabled(true);return;}
+    if(Notification.permission==="denied"){alert("Benachrichtigungen sind im Browser blockiert. Bitte in den Einstellungen freigeben.");return;}
+    const perm=await Notification.requestPermission();
+    if(perm==="granted"){setNotificationEnabled(true);new Notification("ZeitTracker",{body:"Benachrichtigungen aktiviert ✓"});}
   };
 
   useEffect(()=>{
-    const active=(work&&!work.paused)||(drive&&!drive.paused);
+    const active=(work&&!work.paused)||(drive&&!drive.paused)||extraTrackers.some(et=>!et.paused);
     if(active){tickRef.current=setInterval(()=>setNow(Date.now()),1000);}
     else{clearInterval(tickRef.current);}
     return()=>clearInterval(tickRef.current);
-  },[!!work,work?.paused,!!drive,drive?.paused]);
+  },[!!work,work?.paused,!!drive,drive?.paused,extraTrackers]);
 
   const logGps=useCallback(async()=>{
     try{
@@ -242,18 +260,29 @@ export default function App(){
   };
 
   const handleDrivePause=()=>{
-    setDrivepauseModal(true);
-  };
-
-  const confirmDrivePause=(pauseWork)=>{
-    const ts=Date.now();
-    if(!drive.paused){
-      logA("PAUSE_START","Lenkzeit",curLoc);
-      setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}]}));
-    }else{
+    if(drive.paused){
+      // Resuming: no modal needed
+      const ts=Date.now();
       logA("PAUSE_ENDE","Lenkzeit",curLoc);
       setDrive(d=>({...d,paused:false,pauses:d.pauses.map((p,i)=>i===d.pauses.length-1?{...p,end:ts}:p)}));
+    }else{
+      // Pausing: ask if work should pause too
+      setDrivepauseModal(true);
     }
+  };
+
+  const confirmDrivePause=()=>{
+    const ts=Date.now();
+    logA("PAUSE_START","Lenkzeit",curLoc);
+    setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}]}));
+    setDrivepauseModal(false);
+  };
+
+  const confirmDrivePauseBoth=()=>{
+    const ts=Date.now();
+    logA("PAUSE_START","Lenkzeit+Arbeit",curLoc);
+    setDrive(d=>({...d,paused:true,pauses:[...d.pauses,{start:ts}]}));
+    setWork(w=>({...w,paused:true,pauses:[...w.pauses,{start:ts}]}));
     setDrivepauseModal(false);
   };
 
@@ -302,22 +331,63 @@ export default function App(){
     setInlineNoteText("");setShowInlineNote(false);
   };
 
-  const addImageToNote=(noteId,imageData)=>{
-    setNotes(n=>n.map(note=>note.id===noteId?{...note,images:[...(note.images||[]),{id:Date.now(),dataUrl:imageData,ts:Date.now(),size:imageData.length}]}:note));
+  const openEditSession=(session,type)=>{
+    setEditSession({data:session,type});
+    setEditStart(toDatetimeLocal(session.start));
+    setEditEnd(toDatetimeLocal(session.end));
+    setEditTaetigkeit(session.taetigkeit||"");
+    setEditStars(session.stars||0);
   };
 
-  const captureImage=()=>{
-    if(!cameraRef.current) return;
-    const canvas=document.createElement("canvas");
-    canvas.width=cameraRef.current.videoWidth;
-    canvas.height=cameraRef.current.videoHeight;
-    const ctx=canvas.getContext("2d");
-    ctx.drawImage(cameraRef.current,0,0);
-    const imageData=canvas.toDataURL("image/jpeg",0.8);
-    if(notes.length>0){
-      addImageToNote(notes[notes.length-1].id,imageData);
+  const saveEditedSession=()=>{
+    if(!editSession) return;
+    const {data,type}=editSession;
+    const newStart=new Date(editStart).getTime();
+    const newEnd=new Date(editEnd).getTime();
+    const newNetMs=Math.max(0,newEnd-newStart-(data.pauseMs||0));
+    if(type==="Arbeit"){
+      const updated={...data,start:newStart,end:newEnd,netMs:newNetMs,taetigkeit:editTaetigkeit,stars:editStars};
+      db.workSessions.delete(data.start);
+      db.workSessions.put(updated);
+      setWorkSessions(ws=>ws.map(s=>s.start===data.start?updated:s));
+    }else{
+      const updated={...data,start:newStart,end:newEnd,netMs:newNetMs};
+      db.driveSessions.delete(data.start);
+      db.driveSessions.put(updated);
+      setDriveSessions(ds=>ds.map(s=>s.start===data.start?updated:s));
     }
-    setCameraOpen(false);
+    setEditSession(null);
+  };
+
+  const startExtraTracker=()=>{
+    if(!extraTrackerInput.trim()) return;
+    const colorIdx=extraTrackers.length%EXTRA_COLORS.length;
+    const et={id:Date.now(),label:extraTrackerInput.trim(),start:Date.now(),pauses:[],paused:false,rule:extraTrackerRule,color:EXTRA_COLORS[colorIdx]};
+    setExtraTrackers(p=>[...p,et]);
+    logA("EXTRA_START",et.label,curLoc);
+    setExtraTrackerModal(false);setExtraTrackerInput("");setExtraTrackerRule("standard");
+  };
+
+  const pauseExtraTracker=(id)=>{
+    const ts=Date.now();
+    setExtraTrackers(ets=>ets.map(et=>{
+      if(et.id!==id) return et;
+      if(et.paused) return{...et,paused:false,pauses:et.pauses.map((p,i)=>i===et.pauses.length-1?{...p,end:ts}:p)};
+      return{...et,paused:true,pauses:[...et.pauses,{start:ts}]};
+    }));
+  };
+
+  const stopExtraTracker=(id)=>{
+    const ts=Date.now();
+    const et=extraTrackers.find(e=>e.id===id);
+    if(!et) return;
+    let finished={...et};
+    if(finished.paused) finished={...finished,paused:false,pauses:finished.pauses.map((p,i)=>i===finished.pauses.length-1?{...p,end:ts}:p)};
+    const netMs=calcNet({...finished,end:ts},ts);
+    const session={...finished,end:ts,netMs,pauseMs:calcPMs({...finished,end:ts},ts)};
+    setCustomSessions(p=>[...p,session]);
+    setExtraTrackers(ets=>ets.filter(e=>e.id!==id));
+    logA("EXTRA_STOP",`${et.label} ${toH(netMs).toFixed(2)}h`,curLoc);
   };
 
   const createRule=()=>{
@@ -397,15 +467,8 @@ export default function App(){
   const weekMs=workSessions.filter(s=>s.start>=ws2).reduce((s,x)=>s+x.netMs,0);
 
   const getThemeColors=()=>{
-    if(transparent&&dark){
-      return{bg:"rgba(15,17,23,0.7)",card:"rgba(26,29,39,0.5)",s2:"rgba(35,38,58,0.4)",border:"rgba(45,49,72,0.3)",text:"#e2e8f0",muted:"#94a3b8",hint:"#475569",backdrop:"blur(10px)"};
-    }else if(transparent){
-      return{bg:"rgba(244,245,247,0.7)",card:"rgba(255,255,255,0.6)",s2:"rgba(241,242,246,0.5)",border:"rgba(226,228,237,0.4)",text:"#0f172a",muted:"#475569",hint:"#94a3b8",backdrop:"blur(10px)"};
-    }else if(dark){
-      return{bg:"#0f1117",card:"#1a1d27",s2:"#23263a",border:"#2d314840",text:"#e2e8f0",muted:"#94a3b8",hint:"#475569",backdrop:""};
-    }else{
-      return{bg:"#f4f5f7",card:"#ffffff",s2:"#f1f2f6",border:"#e2e4ed",text:"#0f172a",muted:"#475569",hint:"#94a3b8",backdrop:""};
-    }
+    if(dark) return{bg:"#0f1117",card:"#1a1d27",s2:"#23263a",border:"#2d314840",text:"#e2e8f0",muted:"#94a3b8",hint:"#475569",backdrop:""};
+    return{bg:"#f4f5f7",card:"#ffffff",s2:"#f1f2f6",border:"#e2e4ed",text:"#0f172a",muted:"#475569",hint:"#94a3b8",backdrop:""};
   };
 
   const t=getThemeColors();
@@ -518,13 +581,37 @@ export default function App(){
             )}
 
             {work&&(
+              <>
+                {extraTrackers.map(et=>{
+                  const etNet=calcNet(et,now),etPMs=calcPMs(et,now);
+                  return(
+                    <div key={et.id} style={{...C(et.color+"60"),marginBottom:8}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                        <span style={{fontSize:11,fontWeight:500,color:et.color,textTransform:"uppercase",letterSpacing:"0.07em"}}>{et.label}</span>
+                        {!et.paused&&<div style={{width:8,height:8,borderRadius:"50%",background:et.color,animation:"dp 2s ease-in-out infinite"}}/>}
+                      </div>
+                      <div style={{textAlign:"center",padding:"4px 0 10px"}}>
+                        <div style={{fontSize:44,fontWeight:400,fontVariantNumeric:"tabular-nums",color:et.color,lineHeight:1}}>{fmtMs(etNet)}</div>
+                        {etPMs>0&&<div style={{fontSize:11,color:t.hint,marginTop:4}}>Pausen {fmtMs(etPMs)}</div>}
+                      </div>
+                      <div style={{display:"flex",gap:8}}>
+                        <button onClick={()=>pauseExtraTracker(et.id)} style={Btn(t.s2,t.text,`0.5px solid ${t.border}`)}>{et.paused?"▶ Weiter":"⏸ Pause"}</button>
+                        <button onClick={()=>stopExtraTracker(et.id)} style={Btn("#ef444414","#ef4444","0.5px solid #ef444440")}>⏹ Stop</button>
+                      </div>
+                    </div>
+                  );
+                })}
+                <button onClick={()=>setExtraTrackerModal(true)} style={{width:"100%",padding:"8px",background:"transparent",border:`0.5px dashed ${t.border}`,borderRadius:10,color:t.hint,fontSize:13,cursor:"pointer",marginBottom:8}}>+ Weiterer Tracker</button>
+              </>
+            )}
+
+            {work&&(
               !showInlineNote?(
                 <button onClick={()=>setShowInlineNote(true)} style={{width:"100%",padding:"10px 14px",background:"transparent",border:`0.5px solid ${t.border}`,borderRadius:10,color:t.hint,fontSize:13,cursor:"pointer",textAlign:"left"}}>✏ Notiz erfassen...</button>
               ):(
                 <div style={C()}>
                   <textarea autoFocus value={inlineNoteText} onChange={e=>setInlineNoteText(e.target.value)} placeholder="Notiz eingeben..." style={{width:"100%",minHeight:72,background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,padding:"9px 12px",color:t.text,fontSize:14,resize:"none",boxSizing:"border-box"}}/>
                   <div style={{display:"flex",gap:8,marginTop:8}}>
-                    <button onClick={()=>setCameraOpen(true)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>📷 Foto</button>
                     <button onClick={()=>{setShowInlineNote(false);setInlineNoteText("");}} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
                     <button onClick={saveInlineNote} disabled={!inlineNoteText.trim()} style={Btn(inlineNoteText.trim()?"#6366f1":"#6366f140","white")}>Speichern</button>
                   </div>
@@ -591,17 +678,31 @@ export default function App(){
 
               {(() => {
                 const filterDate=new Date();filterDate.setDate(filterDate.getDate()-dashboardFilters.daysBack);
-                let entries=[...workSessions.map(s=>({...s,type:"Arbeit"})),...driveSessions.map(s=>({...s,type:"Fahrt"}))];
+                let entries=[
+                  ...workSessions.map(s=>({...s,type:"Arbeit"})),
+                  ...driveSessions.map(s=>({...s,type:"Fahrt"})),
+                  ...customSessions.map(s=>({...s,type:"Extra"})),
+                ];
                 if(dashboardFilters.gps) entries=[...entries,...gpsLog.map(g=>({ts:g.ts,type:"GPS",lat:g.lat,lng:g.lng}))];
+                if(dashboardFilters.notes) entries=[...entries,...notes.map(n=>({...n,type:"Notiz"}))];
                 entries=entries.filter(e=>new Date(e.ts||e.start)>=filterDate);
                 if(entries.length===0) return <div style={{textAlign:"center",padding:"30px",color:t.hint}}>Keine Einträge</div>;
+                const typeColor={Arbeit:"#6366f1",Fahrt:"#3b82f6",Extra:"#8b5cf6",GPS:"#f97316",Notiz:"#94a3b8"};
                 return entries.sort((a,b)=>(b.ts||b.start)-(a.ts||a.start)).map((s,i)=>(
                   <div key={i} style={{padding:"10px 0",borderBottom:`0.5px solid ${t.border}`,fontSize:12}}>
-                    <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:4}}>
-                      <span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:s.type==="Fahrt"?"#3b82f614":s.type==="GPS"?"#f9731614":"#6366f114",color:s.type==="Fahrt"?"#3b82f6":s.type==="GPS"?"#f97316":"#6366f1"}}>{s.type}</span>
-                      {s.taetigkeit&&<span style={{color:t.hint}}>{s.taetigkeit}</span>}
+                    <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:4,justifyContent:"space-between"}}>
+                      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                        <span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:(typeColor[s.type]||"#6366f1")+"14",color:typeColor[s.type]||"#6366f1"}}>{s.type==="Extra"?s.label||"Extra":s.type}</span>
+                        {s.taetigkeit&&<span style={{color:t.hint}}>{s.taetigkeit}</span>}
+                        {s.netMs&&<span style={{color:t.hint}}>{toH(s.netMs).toFixed(2)}h</span>}
+                        {s.stars>0&&<span style={{color:"#eab308"}}>{"★".repeat(s.stars)}</span>}
+                      </div>
+                      {(s.type==="Arbeit"||s.type==="Fahrt")&&s.end&&(
+                        <button onClick={()=>openEditSession(s,s.type)} style={{padding:"2px 8px",border:`0.5px solid ${t.border}`,borderRadius:5,background:"transparent",color:t.muted,fontSize:11,cursor:"pointer"}}>✎ Edit</button>
+                      )}
                     </div>
-                    <div style={{color:t.hint}}>{fmtDate(s.ts||s.start)} {fmtTime(s.ts||s.start)}{s.type!=="GPS"?`–${fmtTime(s.end)}`:""}</div>
+                    <div style={{color:t.hint}}>{fmtDate(s.ts||s.start)} {fmtTime(s.ts||s.start)}{s.type!=="GPS"&&s.type!=="Notiz"&&s.end?`–${fmtTime(s.end)}`:""}</div>
+                    {s.comment&&<div style={{color:t.hint,marginTop:2,fontStyle:"italic"}}>{s.comment}</div>}
                   </div>
                 ));
               })()}
@@ -649,23 +750,61 @@ export default function App(){
         </div>
       )}
 
-      {cameraOpen&&(
-        <div style={{position:"fixed",inset:0,background:"#00000090",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:200}}>
-          <video ref={cameraRef} autoPlay style={{width:"100%",maxWidth:500,borderRadius:12,marginBottom:16}}/>
-          <div style={{display:"flex",gap:8}}>
-            <button onClick={()=>setCameraOpen(false)} style={Btn("#ef444414","#ef4444","0.5px solid #ef444440")}>Abbrechen</button>
-            <button onClick={captureImage} style={Btn("#6366f1","white")}>📸 Foto</button>
+      {drivepauseModal&&(
+        <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box"}}>
+            <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Lenkzeit pausieren</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={confirmDrivePause} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Nur Fahrt</button>
+              <button onClick={confirmDrivePauseBoth} style={Btn("#6366f1","white")}>Fahrt + Arbeit</button>
+            </div>
           </div>
         </div>
       )}
 
-      {drivepauseModal&&(
+      {editSession&&(
         <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
-          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box",backdropFilter:t.backdrop}}>
-            <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Arbeitszeit auch pausieren?</div>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box",maxHeight:"85vh",overflowY:"auto"}}>
+            <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Eintrag bearbeiten · {editSession.type}</div>
+            <div style={{fontSize:12,color:t.hint,marginBottom:4}}>Start</div>
+            <input type="datetime-local" value={editStart} onChange={e=>setEditStart(e.target.value)} style={{width:"100%",padding:"10px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,color:t.text,marginBottom:12,boxSizing:"border-box"}}/>
+            <div style={{fontSize:12,color:t.hint,marginBottom:4}}>Ende</div>
+            <input type="datetime-local" value={editEnd} onChange={e=>setEditEnd(e.target.value)} style={{width:"100%",padding:"10px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,color:t.text,marginBottom:12,boxSizing:"border-box"}}/>
+            {editSession.type==="Arbeit"&&<>
+              <div style={{fontSize:12,color:t.hint,marginBottom:4}}>Tätigkeit</div>
+              <input type="text" value={editTaetigkeit} onChange={e=>setEditTaetigkeit(e.target.value)} style={{width:"100%",padding:"10px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:8,color:t.text,marginBottom:12,boxSizing:"border-box"}}/>
+              <div style={{fontSize:12,color:t.hint,marginBottom:8}}>Bewertung</div>
+              <div style={{display:"flex",gap:8,marginBottom:16}}>
+                {[1,2,3,4,5].map(s=>(
+                  <button key={s} onClick={()=>setEditStars(s)} style={{background:"none",border:`2px solid ${s<=editStars?"#6366f1":t.border}`,borderRadius:8,fontSize:24,cursor:"pointer",opacity:s<=editStars?1:0.3,padding:"6px",flex:1}}>★</button>
+                ))}
+              </div>
+            </>}
+            <div style={{fontSize:11,color:t.hint,marginBottom:14}}>
+              Netto: {toH(Math.max(0,new Date(editEnd).getTime()-new Date(editStart).getTime()-(editSession.data.pauseMs||0))).toFixed(2)}h (Pausen bleiben erhalten)
+            </div>
             <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>confirmDrivePause(false)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Nur Fahrt</button>
-              <button onClick={()=>confirmDrivePause(true)} style={Btn("#6366f1","white")}>Beide</button>
+              <button onClick={()=>setEditSession(null)} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
+              <button onClick={saveEditedSession} style={Btn("#6366f1","white")}>Speichern</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {extraTrackerModal&&(
+        <div style={{position:"fixed",inset:0,background:"#00000070",display:"flex",alignItems:"flex-end",zIndex:200}}>
+          <div style={{width:"100%",background:t.card,borderRadius:"16px 16px 0 0",padding:"22px 20px",maxWidth:660,margin:"0 auto",boxSizing:"border-box",maxHeight:"80vh",overflowY:"auto"}}>
+            <div style={{fontWeight:500,fontSize:15,marginBottom:16}}>Weiterer Tracker</div>
+            <input autoFocus value={extraTrackerInput} onChange={e=>setExtraTrackerInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")startExtraTracker();}} placeholder="z.B. Besprechung, Ladezeit..." style={{width:"100%",padding:"12px",background:t.s2,border:`0.5px solid ${t.border}`,borderRadius:9,color:t.text,boxSizing:"border-box",marginBottom:14}}/>
+            <div style={{fontSize:12,color:t.hint,marginBottom:8}}>Regel</div>
+            {[{id:"standard",name:"Ohne Regel"},...rules].map(opt=>(
+              <button key={opt.id} onClick={()=>setExtraTrackerRule(opt.id)} style={{width:"100%",padding:"10px",borderRadius:8,border:`2px solid ${extraTrackerRule===opt.id?"#6366f1":t.border}`,background:extraTrackerRule===opt.id?"#6366f114":"transparent",color:extraTrackerRule===opt.id?"#6366f1":t.text,fontSize:12,cursor:"pointer",marginBottom:6,textAlign:"left"}}>
+                {extraTrackerRule===opt.id?"✓ ":""}{opt.name||opt.text}
+              </button>
+            ))}
+            <div style={{display:"flex",gap:8,marginTop:8}}>
+              <button onClick={()=>{setExtraTrackerModal(false);setExtraTrackerInput("");}} style={Btn(t.s2,t.muted,`0.5px solid ${t.border}`)}>Abbrechen</button>
+              <button onClick={startExtraTracker} disabled={!extraTrackerInput.trim()} style={Btn(extraTrackerInput.trim()?"#6366f1":"#6366f140","white")}>Starten</button>
             </div>
           </div>
         </div>
@@ -759,9 +898,12 @@ export default function App(){
       )}
 
       <div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",zIndex:100,display:"flex",gap:8}}>
-        <button onClick={()=>setDark(d=>!d)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>☀/🌙</button>
-        <button onClick={()=>setTransparent(t=>!t)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔷</button>
-        <button onClick={()=>setNotificationEnabled(n=>!n)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:notificationEnabled?"#6366f1":t.muted,fontSize:13,cursor:"pointer",backdropFilter:t.backdrop}}>🔔</button>
+        <button onClick={()=>setDark(d=>!d)} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${t.border}`,color:t.muted,fontSize:13,cursor:"pointer"}}>
+          {dark?"☀ Hell":"🌙 Dunkel"}
+        </button>
+        <button onClick={toggleNotifications} title={notificationEnabled?"Benachrichtigungen aus":"Benachrichtigungen ein"} style={{padding:"8px 18px",borderRadius:99,background:t.card,border:`0.5px solid ${notificationEnabled?"#6366f1":t.border}`,color:notificationEnabled?"#6366f1":t.muted,fontSize:13,cursor:"pointer"}}>
+          {notificationEnabled?"🔔":"🔕"}
+        </button>
       </div>
     </div>
   );
